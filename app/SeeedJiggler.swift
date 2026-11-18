@@ -6,7 +6,7 @@
 //   jiggles reset the HID idle clock, so the time of the last *real* input is tracked separately.
 // - The board is found by USB vendor/product ID and confirmed by its "SEEEDJIGGLER" reply to "?" before use.
 // - No logging, no polling for hot-plug (IOKit notifications), nothing written to disk except the optional
-//   start-at-login plist and one stored preference (idle threshold) when you change it.
+//   start-at-login plist and a few preferences (idle threshold, paused, auto-update-check) when you change them.
 //
 // Build: scripts/build.sh
 
@@ -19,7 +19,6 @@ import CryptoKit
 
 let boardVID = 0x2886, boardPID = 0x802F
 let agentLabel = "com.seeedjiggler"
-let legacyAgentLabel = "com.seeedjiggler.menu"  // earlier name of the login item
 let repoSlug = "rmhomecouk/SeeedJiggler"
 let repoURL = URL(string: "https://github.com/\(repoSlug)")!
 let releaseAsset = "SeeedJiggler-macos-arm64"
@@ -226,6 +225,8 @@ struct Release { let sha: String; let binary: URL; let checksum: URL }
 enum UpdateState: Equatable { case unknown, upToDate, available(String), failed(String) }
 
 final class Updater {
+    /// Ephemeral: no HTTP cache, cookies or credential storage on disk (the shared session writes Cache.db).
+    static let session = URLSession(configuration: .ephemeral)
     var state = UpdateState.unknown
     var release: Release?
     private var apiBase: String {
@@ -248,7 +249,7 @@ final class Updater {
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("SeeedJiggler", forHTTPHeaderField: "User-Agent")  // GitHub requires a User-Agent; nothing identifying
-        URLSession.shared.dataTask(with: req) { d, r, _ in
+        Updater.session.dataTask(with: req) { d, r, _ in
             let code = (r as? HTTPURLResponse)?.statusCode ?? -1
             DispatchQueue.main.async { done(d, code) }
         }.resume()
@@ -302,8 +303,8 @@ final class Updater {
     /// Download, verify, replace the running binary, and re-exec. Returns an error message, or never returns on success.
     func install(_ rel: Release, beforeRestart: @escaping () -> Void, failed: @escaping (String) -> Void) {
         func fail(_ m: String) { DispatchQueue.main.async { failed(m) } }
-        URLSession.shared.dataTask(with: rel.checksum) { sumData, _, _ in
-            URLSession.shared.dataTask(with: rel.binary) { bin, resp, _ in
+        Updater.session.dataTask(with: rel.checksum) { sumData, _, _ in
+            Updater.session.dataTask(with: rel.binary) { bin, resp, _ in
                 guard (resp as? HTTPURLResponse)?.statusCode == 200, let bin = bin, bin.count > 100_000,
                       let sumData = sumData,
                       let want = String(decoding: sumData, as: UTF8.self).split(whereSeparator: { " \t\n".contains($0) }).first
@@ -409,7 +410,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         if let exe = Bundle.main.executablePath { unlink(realPath(exe) + ".old") }  // left by a successful update
-        migrateLoginItem()
 #if TESTPORT
         if ProcessInfo.processInfo.environment["SJ_TOGGLE_LOGIN"] == "1" { toggleLogin(); exit(0) }
         if let n = ProcessInfo.processInfo.environment["SJ_PAUSE_AFTER"], let secs = Double(n) {
@@ -665,14 +665,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? FileManager.default.removeItem(atPath: dest)
         do { try FileManager.default.copyItem(atPath: exe, toPath: dest) } catch { return nil }
         return dest
-    }
-
-    /// A login item under the earlier label is replaced by one under the current label (same program, same settings).
-    func migrateLoginItem() {
-        let legacy = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/LaunchAgents/\(legacyAgentLabel).plist")
-        guard FileManager.default.fileExists(atPath: legacy.path) else { return }
-        if !loginEnabled() { toggleLogin() }
-        try? FileManager.default.removeItem(at: legacy)  // the running job keeps running; it is not loaded again at next login
     }
 
     @objc func toggleLogin() {

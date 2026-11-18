@@ -24,6 +24,10 @@ jobs:
           fetch-depth: 0
       - name: Build
         run: scripts/build.sh
+      - name: Check the build reports this commit
+        run: |
+          # The app refuses an update whose --version does not match the release commit, so a mismatch must fail here.
+          test "$(build/SeeedJiggler --version)" = "$(git rev-parse --short HEAD)"
       - name: Package
         run: |
           mkdir -p out

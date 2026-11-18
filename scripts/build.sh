@@ -6,6 +6,7 @@ mkdir -p "$REPO/build"
 # Version = short commit (plus "-dirty" for uncommitted changes) and build date, embedded as the binary's Info.plist
 # (rev-parse, not describe: describe switches format as soon as a tag exists)
 VER="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+git -C "$REPO" update-index -q --refresh 2>/dev/null || true   # stat-only changes are not "dirty"
 git -C "$REPO" diff-index --quiet HEAD -- 2>/dev/null || VER="$VER-dirty"
 cat > "$REPO/build/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
