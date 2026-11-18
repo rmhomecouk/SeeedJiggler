@@ -17,7 +17,7 @@ PL
 build old aaaaaaa
 build new bbbbbbb
 SHA40=bbbbbbb$(printf '0%.0s' $(seq 1 33))
-export SJ_PORT=/dev/null SJ_API=http://127.0.0.1:18765 SJ_AUTO_INSTALL=1
+export SJ_PORT=/dev/null SJ_API=http://127.0.0.1:18765 SJ_AUTO_INSTALL=1 SJ_RESTART=exec
 
 python3 "$REPO/tests/fake_github.py" 18765 "$T/new" "$SHA40" & SRV=$!; sleep 1
 cp "$T/old" "$T/app"
@@ -54,3 +54,25 @@ cp "$T/old" "$T/app4"
 OUT="$(perl -e 'alarm 60; exec @ARGV' "$T/app4" 2>&1 || true)"; echo "$OUT"
 cmp "$T/app4" "$T/old" && echo "PASS: binary untouched"
 echo "$OUT" | grep -q "newer release was published" && echo "PASS: explained as a changed release"
+
+kill $SRV; wait $SRV 2>/dev/null || true
+echo "--- restart without exec: the old copy exits and the NEW program is started (not under launchd)"
+python3 "$REPO/tests/fake_github.py" 18765 "$T/new" "$SHA40" & SRV=$!; sleep 1
+cp "$T/old" "$T/app5"
+OUT="$(SJ_RESTART=spawn perl -e 'alarm 60; exec @ARGV' "$T/app5" 2>&1 || true)"; sleep 6; echo "$OUT"
+cmp "$T/app5" "$T/new" && echo "PASS: replaced"
+echo "$OUT" | grep -q "check: upToDate" && echo "PASS: new program was started"
+
+echo "--- restart under launchd: exit with failure so KeepAlive starts the new program"
+cp "$T/old" "$T/app6"
+cat > "$T/ld.plist" <<PL
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
+<key>Label</key><string>sjtest.updater</string><key>ProgramArguments</key><array><string>$T/app6</string></array>
+<key>EnvironmentVariables</key><dict><key>SJ_PORT</key><string>/dev/null</string><key>SJ_AUTO_INSTALL</key><string>1</string><key>SJ_RESTART</key><string>launchd</string><key>SJ_API</key><string>$SJ_API</string></dict>
+<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>5</integer>
+<key>StandardOutPath</key><string>$T/ld.out</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>
+PL
+launchctl bootstrap "gui/$(id -u)" "$T/ld.plist"; sleep 20; launchctl bootout "gui/$(id -u)/sjtest.updater" 2>/dev/null || true
+cat "$T/ld.out"
+cmp "$T/app6" "$T/new" && echo "PASS: replaced"
+[ "$(grep -c 'check: upToDate' "$T/ld.out")" -ge 1 ] && echo "PASS: launchd started the new program"

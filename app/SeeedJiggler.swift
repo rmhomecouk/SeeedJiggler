@@ -298,6 +298,28 @@ final class Updater {
         return out.isEmpty ? (nil, "it printed nothing") : (out, "")
     }
 
+    /// Starts the new program. Re-executing in place (execv) left a blank, stale menu bar item behind, so instead:
+    /// under launchd (the login item) exit with a failure status, which KeepAlive turns into a fresh launch of the
+    /// new program; otherwise start the new program and exit.
+    static func restart(_ exe: String, old: String, failed: @escaping (String) -> Void) {
+        let svc = ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"]
+        var underLaunchd = svc != nil && svc != "0" && !(svc!.hasPrefix("application."))
+#if TESTPORT
+        if ProcessInfo.processInfo.environment["SJ_RESTART"] == "exec" {  // tests that only need the in-place restart
+            var args: [UnsafeMutablePointer<CChar>?] = CommandLine.arguments.map { strdup($0) } + [nil]
+            execv(exe, &args); rename(old, exe); return failed("The update was installed but the app could not restart")
+        }
+        underLaunchd = ProcessInfo.processInfo.environment["SJ_RESTART"] == "launchd"
+#endif
+        if underLaunchd { exit(75) }  // EX_TEMPFAIL: not a successful exit, so launchd starts the new program
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: exe); p.arguments = Array(CommandLine.arguments.dropFirst())
+        do { try p.run(); exit(0) } catch {
+            rename(old, exe)  // could not start the new program: put the working one back
+            failed("The update was installed but the app could not restart: \(error.localizedDescription)")
+        }
+    }
+
     /// Download, verify, replace the running binary, and re-exec. Returns an error message, or never returns on success.
     func install(_ rel: Release, beforeRestart: @escaping () -> Void, failed: @escaping (String) -> Void) {
         func fail(_ m: String) { DispatchQueue.main.async { failed(m) } }
@@ -330,11 +352,8 @@ final class Updater {
                     return fail("Cannot replace \(exe): \(String(cString: strerror(errno)))")
                 }
                 DispatchQueue.main.async {
-                    beforeRestart()  // e.g. release keep-awake assertions: they would outlive the exec
-                    var args: [UnsafeMutablePointer<CChar>?] = CommandLine.arguments.map { strdup($0) } + [nil]
-                    execv(exe, &args)  // same pid; launchd keeps supervising it
-                    rename(old, exe)   // exec failed: put the working program back
-                    failed("The update was installed but the app could not restart; quit and reopen it")
+                    beforeRestart()  // release keep-awake assertions: they belong to this process
+                    Updater.restart(exe, old: old, failed: failed)
                 }
             }.resume()
         }.resume()
