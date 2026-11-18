@@ -58,6 +58,8 @@ Installed final build (version `5eb09eb-dirty`), 45 s after launch so the first 
 * **Launcher app:** `open ~/Applications/SeeedJiggler.app` with nothing running started the program (parent launchd, board `app=1`, one status item, mouse icon visible in the menu bar); Spotlight finds the app; with the program already running the second launch shows the "already running" dialog (clicked OK via accessibility, then it exited). A first version that `exec`ed into the program had no menu bar icon, and a first dialog made with the app's own alert stayed hidden when started from Finder, so the launcher spawns the program and the dialog is shown by `osascript`.
 * **Update through the real menu (by accessibility scripting):** "Check for updates…" showed the confirmation dialog with the right text; "Install and Restart" made launchd restart the app (exit 75), new pid, version `c7e02dc`, no `.old`/`.new` files, board `app=1`, menu bar icon normal.
 
+* **Reported by the user, not measured:** the board recovered after a physical unplug and replug with the app running, and the app launched from `~/Applications/SeeedJiggler.app`.
+
 ## Not covered
 
 * A multi-hour or multi-day memory watch of the app (the earlier C engine had a 15-minute watch with flat memory; that does not transfer to the Swift app).

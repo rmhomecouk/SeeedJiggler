@@ -47,6 +47,8 @@ Checked on real hardware (Seeeduino XIAO M0, macOS 27) with the current firmware
 | Jiggles reach the board | `mv` 2 → 4 about 45 s apart (each jiggle is two `M` commands) |
 | Real input holds jiggling off | with the Mac in active use right after launch, `mv` stayed 0 for 12 s (short observation) |
 | Pause on the real board | paused at t = 20 s with the jiggle threshold at 1 s: `hb` kept rising (348 → 367 over 90 s), `mv` stayed at 4 while two jiggles would have fallen due |
+| Physical unplug and replug with the app running | you pulled the cable and plugged it back in: it recovered (reported by you, not measured) |
+| Launcher app | you started the app from ~/Applications and it worked (reported by you) |
 | Board re-enumeration with the app running | reflashed the firmware with the app running: the port vanished and returned, the **same app process** reconnected within 3 s (`hb` restarted at 2, `app=1`). This is a reflash, not a pulled cable |
 | Only one copy runs | a second launch showed "already running" and exited (screenshot); the first kept the board |
 | Live menu bar item | seen in a screenshot of the real menu bar on a dark wallpaper: legible white glyph |
@@ -56,7 +58,7 @@ Observed earlier with the previous C engine and old firmware, not repeated with 
 
 Not verified with the current code:
 
-* **Physically pulling the USB cable** with the app running (re-enumeration by reflashing was verified), and clicking Pause in the menu itself (the same code path was driven by a test hook).
+* **Clicking Pause in the menu itself** (the same code path was driven by a test hook, and verified on the real board).
 * **The no-heartbeat LED blink**, and the other LED behaviours of the new firmware, by eye.
 * **A second physical XIAO**: the app uses the first board that answers; this was not tested with two real boards.
 * **A sleeping Mac**: the firmware never requests USB remote wake-up, so it should not wake a sleeping host; not tested.
