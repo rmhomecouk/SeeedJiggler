@@ -43,7 +43,7 @@ launchctl bootout gui/$(id -u)/com.seeedjiggler
 IDLE_SECS=10 JIGGLE_EVERY=10 build/seeedjiggler -v    # prints "jiggled" lines to the terminal
 ```
 
-On the board, the TX LED flashes on every jiggle, and the yellow LED is solid while the service's heartbeat is being received.
+On the board, the TX LED flashes on every jiggle, and the yellow LED is solid while the service's heartbeat is being received. `python3 -B -I host/hid.py status` reports what the board has received (`hb` heartbeats, `mv` moves, `fb=0` when the service is healthy); with `-v` the foreground service prints the same status line every cycle.
 
 ## Stop temporarily
 
@@ -63,5 +63,5 @@ scripts/uninstall-service.sh
 ## Notes
 
 * **Moved or renamed the repo?** Re-run `scripts/install-service.sh`; the plist stores an absolute path to `build/seeedjiggler`.
-* **Board unplugged?** The service stays alive and silently retries every 5 s; the serial port is re-resolved on each send.
+* **Board unplugged?** The service stays alive and silently retries every 5 s. It finds the board by USB vendor/product ID (`0x2886`/`0x802F`) and confirms it with the firmware's `SEEEDJIGGLER` reply before sending anything, so other USB serial devices are never touched.
 * Don't run the service and a manual foreground copy at the same time.

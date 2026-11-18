@@ -12,7 +12,12 @@ DOMAIN="gui/$(id -u)"
 
 "$REPO/scripts/build.sh"
 mkdir -p "$HOME/Library/LaunchAgents"
+# bootout is asynchronous: wait until the old agent is really gone, or bootstrap can fail intermittently (error 5)
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+for _ in $(seq 1 50); do
+  launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.2
+done
 
 # No StandardOutPath/StandardErrorPath log files: output goes to /dev/null, nothing is written at runtime.
 cat > "$PLIST" <<PL
@@ -42,6 +47,5 @@ cat > "$PLIST" <<PL
 </plist>
 PL
 
-launchctl bootstrap "$DOMAIN" "$PLIST"
-launchctl kickstart -k "$DOMAIN/$LABEL"
+launchctl bootstrap "$DOMAIN" "$PLIST"   # RunAtLoad starts it; no kickstart needed
 echo "Installed $LABEL (idle ${IDLE_SECS:-120}s, jiggle every ${JIGGLE_EVERY:-45}s). No logs are written."

@@ -1,6 +1,8 @@
 # Troubleshooting
 
-**Board not found / `XIAO not found`** — Check `ls /dev/cu.usbmodem*` and `ioreg -p IOUSB -l -w0 | grep "USB Product"`. A working board is "Seeed XIAO M0". Try another cable (many are charge-only).
+**Board not found / `SeeedJiggler board not found`** — Check `ioreg -p IOUSB -l -w0 | grep "USB Product"`: a working board is "Seeed XIAO M0" (vendor `0x2886`, product `0x802F`). "Seeeduino XIAO" means it is sitting in the bootloader — reflash it or power-cycle. The host tools only talk to a port that answers `?` with `SEEEDJIGGLER`, so a board still running other firmware is (correctly) ignored. Try another cable (many are charge-only). `python3 -B -I host/hid.py status` tests the whole path.
+
+**Yellow LED blinking** — The board is connected but hearing no heartbeats, so it is jiggling by itself (fallback). Start or reinstall the service; `hid.py status` shows `fb=1` until a heartbeat arrives.
 
 **Won't enter bootloader** — Double-tap RST→GND (see [hardware-and-flashing.md](hardware-and-flashing.md)). The bootloader shows as "Seeeduino XIAO".
 

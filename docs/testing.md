@@ -4,19 +4,19 @@ The service is meant to run for months, so it is checked for leaks and unbounded
 
 ## Code audit
 
-There is **no heap allocation** in `host/seeedjiggler.c` apart from two short-lived resources, both released on every path:
+There is **no heap allocation** in `host/seeedjiggler.c` apart from short-lived system resources, each released on every path:
 
 | Resource | Created | Released |
 |----------|---------|----------|
-| `CFTypeRef` from `IORegistryEntryCreateCFProperty` (idle time) | every 5 s | `CFRelease` before returning (all branches reach it) |
-| `glob_t` (serial port lookup) | every 5 s | `globfree` unconditionally, including the no-match (board unplugged) path |
-| serial port file descriptor | every send | `close` on every path, including write failure |
+| `CFTypeRef` from `IORegistryEntryCreateCFProperty` (idle time) | every 5 s | `CFRelease` before returning |
+| IOKit serial-device iterator, its services, and the property objects read while matching the board | only when the port is not open (start-up, after unplug) | `IOObjectRelease` / `CFRelease` on every path |
+| serial port file descriptor | when the board is (re)found | held open; `close` on any write error or failed verification |
 
 The `io_service_t` for `IOHIDSystem` is opened once at start and held for the process lifetime.
 
 ## Tools
 
-Live check of the running service (works on the installed LaunchAgent):
+Live check of the installed service:
 
 ```bash
 leaks $(pgrep -x seeedjiggler)      # expect: "0 leaks for 0 total leaked bytes"
@@ -26,29 +26,32 @@ lsof -p $(pgrep -x seeedjiggler) | wc -l              # open file descriptors sh
 
 ## Accelerated stress test
 
-Two compile-time macros make the loop run far faster than production so growth shows up in minutes:
+Compile-time macros make the loop run far faster than production and exercise the rarely-run paths:
 
-* `-DPOLL_SECS=0` — no 5 s sleep between cycles
-* `-DPORT_GLOB='"/dev/cu.nonexistent*"'` — simulates an unplugged board (exercises the failure path every cycle)
+| Macro | Effect |
+|-------|--------|
+| `-DPOLL_SECS=0` | no 5 s sleep between cycles |
+| `-DFORCE_REOPEN` | close the port after every send, so **each cycle re-runs the IOKit scan, open and `?` verification** |
+| `-DSEEED_VID=0x1L` | simulate an absent board: the IOKit scan runs every cycle and finds nothing |
 
 ```bash
-clang -O1 -g -DPOLL_SECS=0 -o /tmp/stress_plugged host/seeedjiggler.c -framework IOKit -framework CoreFoundation
-clang -O1 -g -DPOLL_SECS=0 -DPORT_GLOB='"/dev/cu.nonexistent*"' -o /tmp/stress_unplugged host/seeedjiggler.c -framework IOKit -framework CoreFoundation
-IDLE_SECS=100000 /tmp/stress_plugged &       # IDLE_SECS huge so the cursor is never jiggled
-IDLE_SECS=100000 /tmp/stress_unplugged &
-# sample: ps -o rss= -p <pid> every 15 s, then: leaks <pid>
+F="-O1 -g -DPOLL_SECS=0"; L="-framework IOKit -framework CoreFoundation"
+clang $F                       host/seeedjiggler.c $L -o /tmp/s_steady   # held-open port, steady state
+clang $F -DFORCE_REOPEN        host/seeedjiggler.c $L -o /tmp/s_reopen   # find/open/verify every cycle
+clang $F -DSEEED_VID=0x1L      host/seeedjiggler.c $L -o /tmp/s_absent   # board absent
+IDLE_SECS=100000 /tmp/s_steady &    # IDLE_SECS huge so the cursor is never jiggled
+# sample: ps -o rss= -p <pid>; lsof -p <pid> | wc -l; finally: leaks <pid>
 ```
 
-Stop the LaunchAgent first (`launchctl bootout gui/$(id -u)/com.seeedjiggler`) so the board is not driven by two programs.
+Stop the LaunchAgent first (`launchctl bootout gui/$(id -u)/com.seeedjiggler`) so the board is not driven by several programs at once.
 
 ## Results (2026-11-18, Apple silicon, macOS)
 
-| Test | Result |
-|------|--------|
-| `leaks` on the live service | 0 leaks, 872 allocations / 82 KB (all system framework) |
-| Stress, board present, 120 s (~500 cycles, 20× production rate) | RSS 2672 → 2688 KB (flat after start-up page-in) |
-| Stress, board absent, 120 s (tight loop, millions of cycles) | RSS 2592 KB constant |
-| `leaks` after each stress run | 0 leaks, 0 bytes |
-| Live service RSS | ~2.7 MB steady |
+| Test (100 s each, run concurrently) | RSS | fds | `leaks` |
+|-------------------------------------|-----|-----|---------|
+| Steady state, held-open port, no sleep | 3520 KB, flat (2512 KB at the end) | 8, constant | 0 leaks, 0 bytes |
+| Forced re-find/open/verify every cycle | 3648 KB, flat (2752 KB at the end) | 8, constant | 0 leaks, 0 bytes |
+| Board absent, IOKit scan every cycle | 3680 KB, flat (2800 KB at the end) | 7, constant | 0 leaks, 0 bytes |
+| Installed service, 15 min live watch | 2672 → 2656 KB | 7 | 0 leaks |
 
-Not covered: multi-day soak (the stress runs simulate roughly 40 minutes of production cycles for the plugged path and far more for the unplugged path), and the jiggle-send path under stress (not forced, to avoid moving the cursor).
+Not covered: a multi-day soak, and the jiggle-send path under stress (not forced, to avoid moving the cursor).

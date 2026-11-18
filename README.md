@@ -58,14 +58,19 @@ Defaults can be changed with environment variables: `IDLE_SECS` (default 120) an
 | `scripts/build.sh`, `scripts/install-service.sh`, `scripts/uninstall-service.sh` | Compile the service; install/remove the macOS LaunchAgent so it starts at login |
 | `docs/` | Hardware & flashing, running as a service, serial protocol, design notes, memory/leak testing, troubleshooting |
 
-## Using the board as a general keyboard/mouse
+## Checking the board / using it as a keyboard and mouse
 
 ```bash
-python3 -B -I host/hid.py type "hello"
-python3 -B -I host/hid.py key cmd+space
-python3 -B -I host/hid.py move 100 0
-python3 -B -I host/hid.py click r
+python3 -B -I host/hid.py status          # SEEEDJIGGLER 1 fb=0 age=1234 hb=57 mv=12
+python3 -B -I host/hid.py move 100 0      # relative mouse move
+python3 -B -I host/hid.py click r         # full firmware build only
+python3 -B -I host/hid.py type "hello"    # full firmware build only
+python3 -B -I host/hid.py key cmd+space   # full firmware build only
 ```
+
+`status` shows what the board actually received: `fb=1` means it is in fallback (service silent), `hb` counts heartbeats and `mv` counts mouse-move commands. The typing/key/click commands are lightly tested and use the Arduino `Keyboard` library, which **assumes a US keyboard layout**.
+
+**Security note.** The full firmware lets any local process that can open the board's serial port inject keystrokes and clicks (no Accessibility permission needed). If you only want a jiggler, flash the [jiggler-only build](docs/hardware-and-flashing.md#jiggler-only-build): mouse-only, no keyboard, no `T`/`K`/`C` commands.
 
 Protocol reference: [docs/protocol.md](docs/protocol.md).
 
@@ -73,7 +78,7 @@ Protocol reference: [docs/protocol.md](docs/protocol.md).
 
 * Tested on macOS with one XIAO (SAMD21). The mouse is **relative only** (no absolute positioning).
 * Install the LaunchAgent for start-at-login ([docs/service.md](docs/service.md)). Until the service is running (e.g. just after a reboot), the board's fallback mode keeps jiggling.
-* Fallback-mode behaviour was only partially verified (see [docs/how-it-works.md](docs/how-it-works.md#verification-status)).
+* What has and has not been verified on hardware — heartbeats, jiggle delivery, fallback on/off, real-input detection, leak tests — is listed in [docs/how-it-works.md](docs/how-it-works.md#verification-status). Replug with the current code has not been re-tested.
 * The board's USB core never issues a remote-wake request, so it should not wake a sleeping computer; this was not tested empirically.
 
 ## License
