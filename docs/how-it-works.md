@@ -56,7 +56,7 @@ Observed on real hardware (Seeeduino XIAO M0, macOS), using the firmware's `?` s
 Not verified:
 
 * **A physical USB unplug/replug with the current code.** Reflashing re-enumerates the board (the strongest substitute available without touching the cable), but it is not the same event as pulling the cable.
-* **The LEDs.** Nobody has looked at them since the firmware changes. In particular, a bug where the TX LED would not light during fallback (a stale `millis()` value) was found by code review and fixed, but the fix was not observed on the board.
+* **LEDs in fallback.** The user confirmed by eye (2026-11-18, current firmware) that the yellow LED is solid while the service is healthy and the TX LED flashes. The fallback-mode behaviours (yellow blinking, TX flashing on the self-jiggle) were not observed; a bug where TX would not light in fallback (stale `millis()` value) was found by code review and fixed, but the fix was not seen on the board.
 * **Fallback cadence**: the 45 s self-jiggle interval was not measured (the `?` counters do not count fallback moves).
 * **A second XIAO plugged in at the same time**: the service now tries every device with the board's USB IDs and uses the first that answers as SeeedJiggler, but this was not tested with two boards. (Until a device answers `?` correctly it is sent that one line.)
 * **A sleeping Mac**: the firmware never requests USB remote wake-up, so it should not wake a sleeping host; not tested.
