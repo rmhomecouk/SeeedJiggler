@@ -49,6 +49,8 @@ Installed app, about 1.5 minutes after launch, no board attached: `leaks` report
 * **17-minute run under launchd** (test build from `/private/tmp` via `launchctl submit`, emulated board, screen locked): 208 heartbeats, largest gap 6.0 s (the board's LED timeout is 30 s), 21 jiggles 50 s apart. This was done to look for App Nap throttling; the app also holds a `ProcessInfo` activity for its lifetime. It does not reproduce "user busy in another app".
 * **Keep-awake (`pmset`):** with the assertions held for 26 minutes (display sleep setting 20 min), no "Display is turned off" event occurred after the display was woken. The session was already locked when the test began, so this shows display sleep is prevented, not that the lock is.
 
+* **Updater** (`tests/test-updater.sh`, local fake GitHub): update offered, binary replaced, process re-executed as the new version, corrupted checksum refused with the binary untouched.
+
 ## Not covered
 
 * A multi-hour or multi-day memory watch of the app (the earlier C engine had a 15-minute watch with flat memory; that does not transfer to the Swift app).

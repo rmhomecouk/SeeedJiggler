@@ -20,6 +20,18 @@ Needs the Xcode command line tools. No logs are written. When the repo is under 
 
 The app has full control of the board. The firmware never moves the mouse by itself, so after **Quit** (or a crash, until launchd restarts the app about 10 s later) nothing jiggles. With no heartbeat for 30 s the board only blinks its yellow LED. This needs the current firmware: a board still on the older firmware jiggles by itself 30 s after the app stops, so reflash it ([hardware-and-flashing.md](hardware-and-flashing.md)).
 
+## Updates
+
+Every push to `main` that touches the app triggers `.github/workflows/release.yml`, which builds the app on a GitHub macOS (Apple silicon) runner and replaces the rolling **latest** release with `SeeedJiggler-macos-arm64`, its `.sha256`, and notes containing the full commit hash. The app:
+
+* checks that release 30 s after launch and then daily (menu: *Check for updates automatically*, on by default; it is one small HTTPS request to `api.github.com` with the generic User-Agent `SeeedJiggler`, nothing is logged). *Check for updates…* does it on demand.
+* shows **⬆ Update available (abc1234)…** at the top of the menu when the release is newer than the running commit (it asks GitHub whether the release is ahead of this build, so older or identical releases are not offered).
+* installs **only after you click Install and Restart**: it downloads the binary, requires its SHA-256 to match the published `.sha256`, runs it with `--version` (it must start on this Mac and report the release's commit), keeps the old program as `.old` while it atomically replaces its own executable (the `~/.local/bin` copy if that is what runs), releases keep-awake, and re-executes itself (same process, launchd keeps supervising); if the re-exec fails the old program is put back. Jiggling pauses for a moment, and a paused state is not remembered across the restart. The release is built for macOS 13 or later.
+
+What this does **not** do: update the board's firmware (reflash with `arduino-cli upload`; the app does not check it), or protect you from a compromised GitHub account: the checksum comes from the same release, so it only catches corrupted downloads. Intel Macs are not supported (the release is arm64 only). A build with uncommitted changes (`-dirty`) gets a warning in the confirmation text; a build from an unpushed or diverged commit is offered the release without one. The *version* shown by About is the commit the binary was built from, so builds not made by `scripts/build.sh` show as unknown and are always offered the latest release.
+
+Tested without GitHub: `tests/test-updater.sh` runs the whole check, download, verify, replace and re-exec path against a local fake of the API (including a corrupted checksum being refused). Not yet tested: the real workflow and release (it has to run on GitHub first), and the confirmation dialogs on screen.
+
 ## Icon states
 
 | Icon | Meaning |
@@ -35,9 +47,11 @@ Priority when several apply: no board, not responding, paused, keep-awake, jiggl
 
 ## Menu
 
+* **SeeedJiggler** (the bold title): About box with the version (short commit, `-dirty` if built with uncommitted changes), build date and the GitHub address, with an *Open on GitHub* button. The version is embedded by `scripts/build.sh` as the binary's Info.plist.
 * **Jiggle when idle**: tick to jiggle, untick to pause. While paused the app still sends heartbeats, so the board shows the app is present.
 * **Keep Mac awake**: Off, 1 hour, 4 hours, Until I turn it off. Holds two power assertions (prevent idle display sleep and idle system sleep), so the screen stays on and the screen saver / inactivity lock do not start. Released when the timer ends, when set to Off, or when the app quits. It does **not** stop a manual lock (Ctrl-Cmd-Q), closing the lid, or a lock enforced by a policy. Jiggling already counts as user activity, so keep-awake matters mainly while paused, quit, or with the board unplugged.
 * **Idle threshold**: 1, 2, 5, 10 or 15 minutes (default 2). Stored as the app's only preference, written when you change it.
+* **Check for updates… / Check for updates automatically**: see Updates.
 * **Start at login**: see above.
 * **Quit**.
 
@@ -49,6 +63,7 @@ No polling for the board's presence: IOKit hot-plug notifications. One timer, ev
 
 Real-board checks that passed are listed in [how-it-works.md](how-it-works.md#verification-status). Still unverified:
 
+* The About box was seen in a screenshot (version, build date, address, both buttons; that capture predates the mouse icon, which replaced a generic folder icon). The update dialogs have not been seen.
 * Pause from the menu on the real board (emulator only), unplug/replug with the app running, and the Jiggling, paused and "not responding" icons beyond the one seen (jiggling, on a dark wallpaper). Light-wallpaper colour and the look of the menu itself were not seen.
 * Keep-awake: `pmset -g assertions` shows both assertions while on and none after Off, and in a 26-minute test the display did not sleep (20-minute setting). The Mac was already locked when that test began, so preventing the *lock* is not established.
 * Start at login: `scripts/install.sh` and the menu item's code path (via a test hook in a fake home) were tested; the menu item itself was not clicked.

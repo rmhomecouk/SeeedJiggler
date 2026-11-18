@@ -15,9 +15,13 @@ import Darwin
 import IOKit
 import IOKit.pwr_mgt
 import IOKit.serial
+import CryptoKit
 
 let boardVID = 0x2886, boardPID = 0x802F
 let agentLabel = "com.seeedjiggler.menu"
+let repoSlug = "rmhomecouk/SeeedJiggler"
+let repoURL = URL(string: "https://github.com/\(repoSlug)")!
+let releaseAsset = "SeeedJiggler-macos-arm64"
 let idleChoices: [(String, Double)] = [("1 minute", 60), ("2 minutes", 120), ("5 minutes", 300), ("10 minutes", 600), ("15 minutes", 900)]
 let defaultIdle = 120.0, jiggleEvery = 45.0, pollSecs = 5.0
 
@@ -139,7 +143,7 @@ final class Engine {
     private func ensurePort() -> Bool {
         if fd >= 0 { return true }
         for path in boardPaths() {  // a second XIAO may exist; the first that answers as SeeedJiggler wins
-            let f = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK)
+            let f = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC)  // not inherited across the update re-exec
             if f < 0 { continue }
             var t = termios()
             if tcgetattr(f, &t) != 0 { close(f); continue }
@@ -205,6 +209,127 @@ final class KeepAwake {
     }
 }
 
+// MARK: - Updates
+
+/// Update checker for the rolling "latest" GitHub release (built by .github/workflows/release.yml).
+/// Checks only compare commit hashes; nothing is installed without the user confirming, and the download must
+/// match the SHA-256 published next to it.
+struct Release { let sha: String; let binary: URL; let checksum: URL }
+
+enum UpdateState: Equatable { case unknown, upToDate, available(String), failed(String) }
+
+final class Updater {
+    var state = UpdateState.unknown
+    var release: Release?
+    private var apiBase: String {
+#if TESTPORT
+        return ProcessInfo.processInfo.environment["SJ_API"] ?? "https://api.github.com"
+#else
+        return "https://api.github.com"
+#endif
+    }
+
+    static func version() -> String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown" }
+    /// The commit hash part of the version ("abc1234-dirty" -> "abc1234"), or nil for unknown builds.
+    static func baseSha(_ v: String) -> String? {
+        let b = v.replacingOccurrences(of: "-dirty", with: "")
+        return b.range(of: "^[0-9a-f]{7,40}$", options: .regularExpression) != nil ? b : nil
+    }
+
+    private func get(_ path: String, _ done: @escaping (Data?, Int) -> Void) {
+        guard let url = URL(string: apiBase + path) else { return done(nil, -1) }
+        var req = URLRequest(url: url, timeoutInterval: 20)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("SeeedJiggler", forHTTPHeaderField: "User-Agent")  // GitHub requires a User-Agent; nothing identifying
+        URLSession.shared.dataTask(with: req) { d, r, _ in
+            let code = (r as? HTTPURLResponse)?.statusCode ?? -1
+            DispatchQueue.main.async { done(d, code) }
+        }.resume()
+    }
+
+    func check(_ done: @escaping (UpdateState) -> Void) {
+        get("/repos/\(repoSlug)/releases/tags/latest") { [self] data, code in
+            func finish(_ s: UpdateState) { state = s; done(s) }
+            if code == 404 { return finish(.failed("No release has been published yet")) }
+            guard code == 200, let data = data,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return finish(.failed("Could not reach GitHub"))
+            }
+            let body = obj["body"] as? String ?? ""
+            let assets = obj["assets"] as? [[String: Any]] ?? []
+            func url(_ name: String) -> URL? {
+                assets.first { $0["name"] as? String == name }.flatMap { $0["browser_download_url"] as? String }.flatMap(URL.init(string:))
+            }
+            guard let r = body.range(of: "commit: [0-9a-f]{40}", options: .regularExpression),
+                  let bin = url(releaseAsset), let sum = url(releaseAsset + ".sha256") else {
+                return finish(.failed("The latest release is incomplete"))
+            }
+            let latest = String(body[r].dropFirst("commit: ".count))
+            release = Release(sha: latest, binary: bin, checksum: sum)
+            guard let cur = Updater.baseSha(Updater.version()) else { return finish(.available(String(latest.prefix(7)))) }
+            if latest.hasPrefix(cur) || cur.hasPrefix(latest) { return finish(.upToDate) }
+            // Different commit: only offer it if it is actually ahead of this build.
+            get("/repos/\(repoSlug)/compare/\(cur)...\(latest)") { d, c in
+                let status = (d.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })?["status"] as? String
+                if c == 200, status == "behind" || status == "identical" { return finish(.upToDate) }
+                finish(.available(String(latest.prefix(7))))  // ahead, diverged, or this commit is unknown to GitHub
+            }
+        }
+    }
+
+    /// Runs `program --version` (5 s limit) and returns its output, or nil if it cannot run.
+    static func reportedVersion(_ path: String) -> String? {
+        let p = Process(), pipe = Pipe()
+        p.executableURL = URL(fileURLWithPath: path); p.arguments = ["--version"]
+        p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { p.waitUntilExit(); done.signal() }
+        if done.wait(timeout: .now() + 5) == .timedOut { p.terminate(); return nil }
+        guard p.terminationStatus == 0 else { return nil }
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return out.isEmpty ? nil : out
+    }
+
+    /// Download, verify, replace the running binary, and re-exec. Returns an error message, or never returns on success.
+    func install(_ rel: Release, beforeRestart: @escaping () -> Void, failed: @escaping (String) -> Void) {
+        func fail(_ m: String) { DispatchQueue.main.async { failed(m) } }
+        URLSession.shared.dataTask(with: rel.checksum) { sumData, _, _ in
+            URLSession.shared.dataTask(with: rel.binary) { bin, resp, _ in
+                guard (resp as? HTTPURLResponse)?.statusCode == 200, let bin = bin, bin.count > 100_000,
+                      let sumData = sumData,
+                      let want = String(decoding: sumData, as: UTF8.self).split(whereSeparator: { " \t\n".contains($0) }).first
+                else { return fail("The download failed") }
+                let have = SHA256.hash(data: bin).map { String(format: "%02x", $0) }.joined()
+                guard have == want.lowercased() else { return fail("The download did not match its checksum, so it was not installed") }
+                guard let exe = Bundle.main.executablePath.map(realPath) else { return fail("Cannot locate the running program") }
+                let tmp = exe + ".new", old = exe + ".old"
+                do {
+                    try bin.write(to: URL(fileURLWithPath: tmp))
+                    chmod(tmp, 0o755)
+                } catch { return fail("Cannot write next to \(exe): \(error.localizedDescription)") }
+                // Run the download before trusting it: it must start on this Mac and report the release's commit.
+                guard Updater.reportedVersion(tmp).map({ rel.sha.hasPrefix($0) }) == true else {
+                    unlink(tmp); return fail("The downloaded program does not run on this Mac, so it was not installed")
+                }
+                unlink(old)
+                guard rename(exe, old) == 0, rename(tmp, exe) == 0 else {
+                    rename(old, exe); unlink(tmp)
+                    return fail("Cannot replace \(exe): \(String(cString: strerror(errno)))")
+                }
+                DispatchQueue.main.async {
+                    beforeRestart()  // e.g. release keep-awake assertions: they would outlive the exec
+                    var args: [UnsafeMutablePointer<CChar>?] = CommandLine.arguments.map { strdup($0) } + [nil]
+                    execv(exe, &args)  // same pid; launchd keeps supervising it
+                    rename(old, exe)   // exec failed: put the working program back
+                    failed("The update was installed but the app could not restart; quit and reopen it")
+                }
+            }.resume()
+        }.resume()
+    }
+}
+
 // MARK: - Icons
 
 enum Icon { case watching, jiggling, paused, noBoard, noReply, awake }
@@ -253,6 +378,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let awake = KeepAwake()
     let engine: Engine
+    let updater = Updater()
+    var autoCheck = UserDefaults.standard.object(forKey: "autoUpdateCheck") as? Bool ?? true
     var notePort: IONotificationPortRef?
     var activity: NSObjectProtocol?
     var idleChoice: Double
@@ -269,6 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        if let exe = Bundle.main.executablePath { unlink(realPath(exe) + ".old") }  // left by a successful update
 #if !TESTPORT
         if otherInstanceRunning() { exit(0) }  // two copies would both drive the board
 #endif
@@ -281,6 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let n = ProcessInfo.processInfo.environment["SJ_PAUSE_AFTER"], let secs = Double(n) {
             DispatchQueue.main.asyncAfter(deadline: .now() + secs) { [weak self] in self?.toggleJiggle() }
         }
+        if ProcessInfo.processInfo.environment["SJ_ABOUT"] == "1" { DispatchQueue.main.async { self.showAbout() } }
         if let n = ProcessInfo.processInfo.environment["SJ_QUIT_AFTER"], let secs = Double(n) {
             DispatchQueue.main.asyncAfter(deadline: .now() + secs) { NSApp.terminate(nil) }
         }
@@ -295,6 +424,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startHotplugWatch()
         engine.start()
         refresh()
+        // Daily background check (one small request to GitHub, nothing installed without asking).
+        let t = Timer(timeInterval: 24 * 3600, repeats: true) { [weak self] _ in self?.autoCheckNow() }
+        RunLoop.main.add(t, forMode: .common)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.autoCheckNow() }
+#if TESTPORT
+        if ProcessInfo.processInfo.environment["SJ_PRINT_VERSION"] == "1" { print(Updater.version()); fflush(stdout); exit(0) }
+        if ProcessInfo.processInfo.environment["SJ_AUTO_INSTALL"] == "1" {
+            updater.check { [weak self] st in
+                print("check:", st); fflush(stdout)
+                guard let self = self, let r = self.updater.release, case .available = st else { exit(2) }
+                self.updater.install(r, beforeRestart: {}, failed: { print("install failed:", $0); exit(3) })
+            }
+        }
+#endif
+    }
+
+    func autoCheckNow() {
+        guard autoCheck else { return }
+        updater.check { [weak self] _ in self?.refresh() }
     }
 
     // Hot-plug: IOKit tells us when a serial device appears or disappears.
@@ -373,7 +521,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             i.target = self; i.state = on ? .on : .off; i.isEnabled = sel != nil
             menu.addItem(i); return i
         }
-        let head = NSMenuItem(title: "SeeedJiggler", action: nil, keyEquivalent: "")
+        let head = NSMenuItem(title: "SeeedJiggler", action: #selector(showAbout), keyEquivalent: "")
+        head.target = self
         head.attributedTitle = NSAttributedString(string: "SeeedJiggler", attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
         menu.addItem(head)
         let ok = present && ready
@@ -382,6 +531,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .foregroundColor: ok ? NSColor.systemGreen : NSColor.systemOrange])
         menu.addItem(dot)
         _ = add(statusLine())
+        if case .available(let v) = updater.state {
+            let u = NSMenuItem(title: "⬆ Update available (\(v))…", action: #selector(offerUpdate), keyEquivalent: "")
+            u.target = self
+            menu.addItem(u)
+        }
         menu.addItem(.separator())
 
         _ = add("Jiggle when idle", #selector(toggleJiggle), on: mode != 2)
@@ -417,6 +571,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         idleItem.submenu = idleSub
         menu.addItem(idleItem)
         menu.addItem(.separator())
+        _ = add("Check for updates…", #selector(checkUpdatesNow))
+        _ = add("Check for updates automatically", #selector(toggleAutoCheck), on: autoCheck)
         _ = add("Start at login", #selector(toggleLogin), on: loginEnabled())
         menu.addItem(.separator())
         let q = add("Quit", #selector(quit)); q.keyEquivalent = "q"
@@ -433,6 +589,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func toggleJiggle() { mode = mode == 2 ? 0 : 2; engine.setPaused(mode == 2); refresh() }
+
+    @objc func showAbout() {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "unknown (not built with scripts/build.sh)"
+        let built = info?["CFBundleVersion"] as? String ?? "unknown"
+        let alert = NSAlert()
+        alert.messageText = "SeeedJiggler"
+        alert.icon = NSImage(systemSymbolName: "computermouse", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 48, weight: .regular))  // otherwise a generic folder icon
+        alert.informativeText = "Version \(version)\nBuilt \(built)\n\n\(repoURL.absoluteString)"
+        alert.addButton(withTitle: "Open on GitHub")
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)  // an accessory app is not frontmost by default
+        if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(repoURL) }
+    }
+
+    @objc func toggleAutoCheck() {
+        autoCheck.toggle()
+        UserDefaults.standard.set(autoCheck, forKey: "autoUpdateCheck")
+    }
+
+    func alert(_ title: String, _ text: String, buttons: [String] = ["OK"]) -> Bool {
+        let a = NSAlert()
+        a.messageText = title; a.informativeText = text
+        a.icon = NSImage(systemSymbolName: "computermouse", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 48, weight: .regular))
+        buttons.forEach { a.addButton(withTitle: $0) }
+        NSApp.activate(ignoringOtherApps: true)
+        return a.runModal() == .alertFirstButtonReturn
+    }
+
+    @objc func checkUpdatesNow() {
+        updater.check { [weak self] st in
+            guard let self = self else { return }
+            self.refresh()
+            switch st {
+            case .available: self.offerUpdate()
+            case .upToDate: _ = self.alert("SeeedJiggler is up to date", "Version \(Updater.version())")
+            case .failed(let m): _ = self.alert("Could not check for updates", m)
+            case .unknown: break
+            }
+        }
+    }
+
+    @objc func offerUpdate() {
+        guard let rel = updater.release else { return }
+        let dirty = Updater.version().contains("dirty") ? "\n\nThis build has local changes; they will be replaced." : ""
+        let go = alert("Install the update?",
+                       "You have \(Updater.version()). Latest on GitHub is \(rel.sha.prefix(7)).\n\nThe app downloads it, checks its SHA-256, replaces itself and restarts. Jiggling pauses for a moment.\(dirty)",
+                       buttons: ["Install and Restart", "Cancel"])
+        guard go else { return }
+        updater.install(rel, beforeRestart: { [weak self] in self?.awake.set(.off) },
+                        failed: { [weak self] m in _ = self?.alert("Update failed", m) })
+    }
 
     @objc func quit() { NSApp.terminate(nil) }
 
@@ -474,6 +684,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
+if CommandLine.arguments.contains("--version") { print(Updater.version()); exit(0) }  // used to vet a downloaded update
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
