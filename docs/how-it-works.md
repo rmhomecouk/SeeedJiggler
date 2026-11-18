@@ -6,13 +6,15 @@ Software jigglers synthesise events inside the OS. A board plugged into USB gene
 
 ## Idle detection (host)
 
-The board cannot see the computer's input, so `host/idlejiggle.py` reads macOS's `HIDIdleTime` (nanoseconds since last input) from `ioreg -c IOHIDSystem` every 5 s.
+The board cannot see the computer's input, so `host/seeedjiggler.c` reads macOS's `HIDIdleTime` (nanoseconds since last input) every 5 s, directly from the `IOHIDSystem` service via IOKit — no subprocess, no files.
 
-**Problem:** the jiggle itself is HID input, so it resets `HIDIdleTime` and the script would think you came back. **Solution:** the script keeps `last_real`, the time of the last *genuine* input, and the time of its own last jiggle. If `HIDIdleTime` is smaller than "time since my last jiggle" (minus 2 s slack), input arrived *after* the jiggle, so it must be you — `last_real` is updated and jiggling stops. Otherwise the idle clock keeps counting from `last_real`.
+**Problem:** the jiggle itself is HID input, so it resets `HIDIdleTime` and the service would think you came back. **Solution:** the service keeps `last_real`, the time of the last *genuine* input, and the time of its own last jiggle. If `HIDIdleTime` is smaller than "time since my last jiggle" (minus 2 s slack), input arrived *after* the jiggle, so it must be you — `last_real` is updated and jiggling stops. Otherwise the idle clock keeps counting from `last_real`.
 
 Defaults: idle threshold 120 s (`IDLE_SECS`), jiggle every 45 s (`JIGGLE_EVERY`). A jiggle is `M 8 0` then `M -8 0`.
 
-Every 5 s the script also sends `H` (heartbeat). If the board is unplugged it logs "board unavailable, will keep retrying" once and keeps looping; the serial port is re-resolved on each send, so it logs "board reconnected" when the board returns.
+Every 5 s the service also sends `H` (heartbeat). If the board is unplugged the send simply fails and is retried on the next cycle; the serial port is re-resolved (`/dev/cu.usbmodem*`) on every send, so it picks the board up again when it returns. The service never logs and never writes to disk (run it in the foreground with `-v` to see jiggle events on stderr).
+
+**Footprint:** ~3.5 MB resident (measured), one wake-up every 5 s, no child processes.
 
 ## Watchdog fallback (firmware)
 
@@ -37,8 +39,8 @@ A sleeping host: the firmware never calls the SAMD21's remote-wakeup, so jiggles
 What was actually tested while building this:
 
 * Flashing and HID: cursor moved and returned exactly on command ✔
-* Idle service: with a short threshold it jiggled on schedule and stopped on real input ✔
+* Idle service (originally prototyped in Python, now the native C service): with a short threshold it jiggled on schedule and stopped on real input ✔
 * Presence status stayed "Available" through 15 min of idle with the service running (45/45 samples) ✔
-* Unplug/replug: board re-enumerates on the same port and responds ✔; the daemon's "unavailable/reconnected" log path was **not** exercised end-to-end (error path unit-checked only)
+* Unplug/replug: board re-enumerates on the same port and responds ✔; the native service's retry-while-unplugged path was **not** exercised end-to-end
 * Watchdog fallback: the board produced jiggles with the service off, but the observation was made while the computer was also in use, so cadence was not cleanly confirmed ⚠
 * Stopping of fallback when the service returns: **not yet confirmed**

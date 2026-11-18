@@ -1,6 +1,11 @@
 # Running as a service (macOS LaunchAgent)
 
-By default `host/idlejiggle.py` only runs while a terminal is open. Install it as a per-user **LaunchAgent** so it starts at login and is restarted if it ever exits.
+The host service is a small **native C program** (`host/seeedjiggler.c`). It is built for low overhead:
+
+* ~3.5 MB resident (measured), negligible CPU (wakes once every 5 s)
+* **No logging and no disk writes at runtime** — output goes to `/dev/null`, no log files, no caches
+* No child processes — the idle time is read directly from IOKit (no `ioreg` spawns)
+* Runs at background priority (`Nice 10`, `ProcessType Background`, `LowPriorityIO`)
 
 ## Install
 
@@ -8,7 +13,7 @@ By default `host/idlejiggle.py` only runs while a terminal is open. Install it a
 scripts/install-service.sh
 ```
 
-Optional settings (written into the agent, re-run to change them):
+Optional settings (baked into the agent; re-run to change them):
 
 ```bash
 IDLE_SECS=180 JIGGLE_EVERY=60 scripts/install-service.sh
@@ -16,9 +21,9 @@ IDLE_SECS=180 JIGGLE_EVERY=60 scripts/install-service.sh
 
 What the script does:
 
-1. Writes `~/Library/LaunchAgents/com.seeedjiggler.plist`, pointing at **this checkout's** `host/idlejiggle.py` and your `python3` (`python3 -I`).
-2. Loads it into your GUI session (`launchctl bootstrap gui/<uid>`) and starts it immediately.
-3. Logs to `~/Library/Logs/SeeedJiggler.log`.
+1. Compiles `host/seeedjiggler.c` to `build/seeedjiggler` (needs the Xcode command line tools: `xcode-select --install`).
+2. Writes `~/Library/LaunchAgents/com.seeedjiggler.plist`, pointing at that binary.
+3. Loads it into your GUI session (`launchctl bootstrap gui/<uid>`) and starts it immediately.
 
 The agent uses `RunAtLoad` (start at login) and `KeepAlive` (restart on exit, throttled to once per 10 s).
 
@@ -27,11 +32,18 @@ The agent uses `RunAtLoad` (start at login) and `KeepAlive` (restart on exit, th
 ## Check it
 
 ```bash
-launchctl print gui/$(id -u)/com.seeedjiggler | grep -E "state|pid|last exit"
-tail -f ~/Library/Logs/SeeedJiggler.log
+launchctl print gui/$(id -u)/com.seeedjiggler | grep -E "state|pid|runs|last exit"
+ps -o pid,rss,command -p $(pgrep seeedjiggler)        # rss is in KB
 ```
 
-Log lines: `jiggled` (a jiggle was sent), `board unavailable, will keep retrying` / `board reconnected` (unplug/replug).
+There is no log. To see what it is doing, stop the service and run it in the foreground with `-v`:
+
+```bash
+launchctl bootout gui/$(id -u)/com.seeedjiggler
+IDLE_SECS=10 JIGGLE_EVERY=10 build/seeedjiggler -v    # prints "jiggled" lines to the terminal
+```
+
+On the board, the TX LED flashes on every jiggle, and the yellow LED is solid while the service's heartbeat is being received.
 
 ## Stop temporarily
 
@@ -50,6 +62,6 @@ scripts/uninstall-service.sh
 
 ## Notes
 
-* **Moved or renamed the repo?** Re-run `scripts/install-service.sh`; the plist stores an absolute path.
-* **Changed Python (e.g. new Homebrew version)?** The script records `command -v python3` at install time (normally the stable `/opt/homebrew/bin/python3` symlink); re-run if it breaks.
-* Don't run the service and a manual `python3 host/idlejiggle.py` at the same time.
+* **Moved or renamed the repo?** Re-run `scripts/install-service.sh`; the plist stores an absolute path to `build/seeedjiggler`.
+* **Board unplugged?** The service stays alive and silently retries every 5 s; the serial port is re-resolved on each send.
+* Don't run the service and a manual foreground copy at the same time.

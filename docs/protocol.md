@@ -17,4 +17,4 @@ Key names: `ctrl shift alt/opt cmd/gui/win enter/return esc tab backspace delete
 
 **Any** received line (not just `H`) counts as a heartbeat for the watchdog.
 
-From the host use `host/hid.py`, which finds the port by globbing `/dev/cu.usbmodem*` on every call (so it survives unplug/replug).
+From the host use `host/hid.py` (or `host/seeedjiggler.c`, which speaks the same protocol), which finds the port by globbing `/dev/cu.usbmodem*` on every call (so it survives unplug/replug).
