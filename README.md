@@ -56,7 +56,7 @@ Defaults can be changed with environment variables: `IDLE_SECS` (default 120) an
 | `host/seeedjiggler.c` | macOS idle-aware service in C (heartbeat + jiggle logic, survives unplug/replug, no logging) |
 | `host/hid.py` | Optional Python CLI to send keystrokes / mouse actions to the board |
 | `scripts/build.sh`, `scripts/install-service.sh`, `scripts/uninstall-service.sh` | Compile the service; install/remove the macOS LaunchAgent so it starts at login |
-| `docs/` | Hardware & flashing, running as a service, serial protocol, design notes, troubleshooting |
+| `docs/` | Hardware & flashing, running as a service, serial protocol, design notes, memory/leak testing, troubleshooting |
 
 ## Using the board as a general keyboard/mouse
 

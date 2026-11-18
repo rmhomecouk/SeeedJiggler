@@ -19,6 +19,16 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Poll interval in seconds; overridable at compile time (e.g. -DPOLL_SECS=0 for leak stress tests). */
+#ifndef POLL_SECS
+#define POLL_SECS 5
+#endif
+
+/* Serial port pattern; overridable at compile time (tests simulate an unplugged board). */
+#ifndef PORT_GLOB
+#define PORT_GLOB "/dev/cu.usbmodem*"
+#endif
+
 static double mono(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
@@ -50,9 +60,10 @@ static double idle_secs(io_service_t svc) {
 /* Open the board's serial port fresh each time, so unplug/replug just works. */
 static int send_lines(const char *const *lines, int n) {
     glob_t g;
-    if (glob("/dev/cu.usbmodem*", 0, NULL, &g) != 0) return -1;
-    int fd = open(g.gl_pathv[0], O_RDWR | O_NOCTTY | O_NONBLOCK);
-    globfree(&g);
+    int fd = -1;
+    if (glob(PORT_GLOB, 0, NULL, &g) == 0 && g.gl_pathc > 0)
+        fd = open(g.gl_pathv[0], O_RDWR | O_NOCTTY | O_NONBLOCK);
+    globfree(&g); /* always free, including the no-match (board unplugged) path */
     if (fd < 0) return -1;
     struct termios t;
     if (tcgetattr(fd, &t) == 0) {
@@ -96,6 +107,6 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        sleep(5);
+        sleep(POLL_SECS);
     }
 }
