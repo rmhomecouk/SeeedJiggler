@@ -12,8 +12,7 @@
 
 **Status still goes "Away"** — Raise jiggle frequency (`JIGGLE_EVERY`) or lower `IDLE_SECS`; confirm the TX LED flashes on each jiggle and `jiggle.log` shows "jiggled".
 
-**Service stops after reboot/logout** — It is not installed as a LaunchAgent by this repo. Add your own, or rely on the board's fallback.
+**Service stops after reboot/logout** — Install the LaunchAgent: see [service.md](service.md). Until then the board's fallback keeps jiggling.
 
 **Serial port busy during upload** — Stop `idlejiggle.py` while flashing.
 
-**Verifying with Teams** — `host/teamswatch.py <window-id>` samples the status badge by screen-capturing the Teams window (`screencapture -l`). The pixel offsets are tuned to one Retina layout and the window id changes when Teams restarts; treat it as an experiment.

@@ -2,7 +2,7 @@
 
 A tiny hardware mouse jiggler built from a **Seeeduino XIAO (SAMD21)**, plus a small macOS service that only jiggles when you are actually idle.
 
-The XIAO shows up to the computer as a genuine USB keyboard + mouse, so the activity is real HID input — it keeps chat status (Teams, Slack, etc.) "Available" and stops screen lock/sleep timers, with nothing to install on a locked-down machine except an optional Python script.
+The XIAO shows up to the computer as a genuine USB keyboard + mouse, so the activity is real HID input — it keeps chat/presence status "Available" and stops screen lock/sleep timers, with nothing to install on a locked-down machine except an optional Python script.
 
 > **Use responsibly.** Check your employer's acceptable-use policy before using any jiggler on a work machine. This project is provided for personal use and learning.
 
@@ -39,8 +39,11 @@ arduino-cli lib install Keyboard Mouse
 arduino-cli compile --fqbn Seeeduino:samd:seeed_XIAO_m0 firmware/SeeedJiggler
 arduino-cli upload  -p /dev/cu.usbmodem* --fqbn Seeeduino:samd:seeed_XIAO_m0 firmware/SeeedJiggler
 
-# 3. run the idle-aware service
+# 3. run the idle-aware service (foreground, to try it)
 python3 -I host/idlejiggle.py
+
+# 4. ...or install it to start at login
+scripts/install-service.sh
 ```
 
 Defaults can be changed with environment variables: `IDLE_SECS` (default 120) and `JIGGLE_EVERY` (default 45).
@@ -52,8 +55,8 @@ Defaults can be changed with environment variables: `IDLE_SECS` (default 120) an
 | `firmware/SeeedJiggler/SeeedJiggler.ino` | XIAO firmware: USB HID keyboard+mouse, serial command parser, watchdog fallback, LEDs |
 | `host/idlejiggle.py` | macOS idle-aware service (heartbeat + jiggle logic, survives unplug/replug) |
 | `host/hid.py` | CLI to send keystrokes / mouse actions to the board |
-| `host/teamswatch.py`, `host/watchloop.sh` | Optional experiment: watch the Teams status badge colour to verify the jiggler works |
-| `docs/` | Hardware & flashing, serial protocol, design notes, troubleshooting |
+| `scripts/install-service.sh`, `scripts/uninstall-service.sh` | Install/remove the macOS LaunchAgent so the service starts at login |
+| `docs/` | Hardware & flashing, running as a service, serial protocol, design notes, troubleshooting |
 
 ## Using the board as a general keyboard/mouse
 
@@ -69,7 +72,7 @@ Protocol reference: [docs/protocol.md](docs/protocol.md).
 ## Status & limitations
 
 * Tested on macOS with one XIAO (SAMD21). The mouse is **relative only** (no absolute positioning).
-* Run at login via your own LaunchAgent if desired (not installed by this repo). Until the service starts after a reboot, the board's fallback mode keeps jiggling.
+* Install the LaunchAgent for start-at-login ([docs/service.md](docs/service.md)). Until the service is running (e.g. just after a reboot), the board's fallback mode keeps jiggling.
 * Fallback-mode behaviour was only partially verified (see [docs/how-it-works.md](docs/how-it-works.md#verification-status)).
 * The board's USB core never issues a remote-wake request, so it should not wake a sleeping computer; this was not tested empirically.
 

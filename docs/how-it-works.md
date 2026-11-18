@@ -38,7 +38,7 @@ What was actually tested while building this:
 
 * Flashing and HID: cursor moved and returned exactly on command ✔
 * Idle service: with a short threshold it jiggled on schedule and stopped on real input ✔
-* Teams "Available" badge stayed green for 15 min of idle with the service running (45/45 samples) ✔
+* Presence status stayed "Available" through 15 min of idle with the service running (45/45 samples) ✔
 * Unplug/replug: board re-enumerates on the same port and responds ✔; the daemon's "unavailable/reconnected" log path was **not** exercised end-to-end (error path unit-checked only)
 * Watchdog fallback: the board produced jiggles with the service off, but the observation was made while the computer was also in use, so cadence was not cleanly confirmed ⚠
 * Stopping of fallback when the service returns: **not yet confirmed**
