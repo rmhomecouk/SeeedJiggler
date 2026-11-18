@@ -5,6 +5,7 @@
 //   H                 heartbeat (feeds the watchdog; no reply)
 //   ?                 status: "SEEEDJIGGLER 1 fb=<0|1> age=<ms> hb=<n> mv=<n>"  (does NOT feed the watchdog)
 //   M <dx> <dy>       move mouse relatively (any size, chunked)             -> "OK"
+//   anything else     -> "ERR"
 //   T <text>          type text                                             -> "OK"   (full build only)
 //   K <combo>         key combo, e.g. ctrl+c, cmd+space, enter, f5          -> "OK"   (full build only)
 //   S <n>             scroll wheel (+up / -down)                            -> "OK"   (full build only)
@@ -123,6 +124,7 @@ void handle(String l) {
   else if (c == 'D') { Mouse.press(btn(a)); }
   else if (c == 'U') { Mouse.release(btn(a)); }
 #endif
+  else { Serial.println("ERR"); return; }  // unknown command (or one compiled out of the jiggler-only build)
   Serial.println("OK");
 }
 
@@ -147,8 +149,10 @@ void loop() {
     lastFallback = now;
     Mouse.move(8, 0, 0); delay(20); Mouse.move(-8, 0, 0); flashTx();
   }
-  if (txOn && now - txStart > LED_FLASH_MS) { digitalWrite(PIN_LED_TXL, HIGH); txOn = false; }
-  if (rxOn && now - rxStart > LED_FLASH_MS) { digitalWrite(PIN_LED_RXL, HIGH); rxOn = false; }
+  // Fresh millis() here, not the cached `now`: the fallback block above (delay + flashTx) may have just
+  // set txStart to a time later than `now`, which would underflow the subtraction and turn the LED off at once.
+  if (txOn && millis() - txStart > LED_FLASH_MS) { digitalWrite(PIN_LED_TXL, HIGH); txOn = false; }
+  if (rxOn && millis() - rxStart > LED_FLASH_MS) { digitalWrite(PIN_LED_RXL, HIGH); rxOn = false; }
   while (Serial.available()) {
     char ch = Serial.read();
     if (ch == '\n') { handle(line); line = ""; }

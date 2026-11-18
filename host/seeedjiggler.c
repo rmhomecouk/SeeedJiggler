@@ -85,8 +85,8 @@ static int parent_num(io_service_t s, const char *key, long *out) {
     return ok;
 }
 
-/* Fill path with the callout device (/dev/cu.*) of the board with our VID/PID. 0 = found. */
-static int find_board(char *path, size_t n) {
+/* Fill path with the callout device (/dev/cu.*) of the which-th device (0-based) with our VID/PID. 0 = found. */
+static int find_board(char *path, size_t n, int which) {
     io_iterator_t it;
     if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(kIOSerialBSDServiceValue), &it) != KERN_SUCCESS)
         return -1;
@@ -94,7 +94,8 @@ static int find_board(char *path, size_t n) {
     io_object_t s;
     while (found < 0 && (s = IOIteratorNext(it)) != 0) {
         long vid = -1, pid = -1;
-        if (parent_num(s, "idVendor", &vid) && parent_num(s, "idProduct", &pid) && vid == SEEED_VID && pid == SEEED_PID) {
+        if (parent_num(s, "idVendor", &vid) && parent_num(s, "idProduct", &pid) && vid == SEEED_VID && pid == SEEED_PID &&
+            which-- == 0) {
             CFTypeRef cp = IORegistryEntryCreateCFProperty(s, CFSTR(kIOCalloutDeviceKey), kCFAllocatorDefault, 0);
             if (cp && CFGetTypeID(cp) == CFStringGetTypeID() &&
                 CFStringGetCString((CFStringRef)cp, path, (CFIndex)n, kCFStringEncodingUTF8))
@@ -135,25 +136,27 @@ static int write_all(const char *s) {
 static int ensure_port(void) {
     if (port_fd >= 0) return port_fd;
     char path[256];
-    if (find_board(path, sizeof path) != 0) return -1;
-    int fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
-    if (fd < 0) return -1;
-    struct termios t;
-    if (tcgetattr(fd, &t) != 0) { close(fd); return -1; }
-    cfmakeraw(&t);                    /* no echo, no line editing, no CR/LF mangling */
-    t.c_cflag |= CLOCAL | CREAD;
-    t.c_cc[VMIN] = 0;
-    t.c_cc[VTIME] = 0;
-    cfsetspeed(&t, B115200);          /* never 1200: that is the bootloader-reset baud rate */
-    if (tcsetattr(fd, TCSANOW, &t) != 0) { close(fd); return -1; }
-    tcflush(fd, TCIOFLUSH);
-    port_fd = fd;
-    /* Confirm it really is our firmware before sending anything else. */
-    /* Stale replies (e.g. "OK") may precede ours, so look for the ID anywhere in the reply. */
-    char buf[256];
-    if (write_all("?\n") == 0 && read_pending(buf, sizeof buf, 500) > 0 && strstr(buf, "SEEEDJIGGLER") != NULL)
-        return port_fd;
-    close_port();
+    /* Try every device with our VID/PID (a second XIAO may exist); the first that answers as SeeedJiggler wins. */
+    for (int which = 0; find_board(path, sizeof path, which) == 0; which++) {
+        int fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
+        if (fd < 0) continue;
+        struct termios t;
+        if (tcgetattr(fd, &t) != 0) { close(fd); continue; }
+        cfmakeraw(&t);                /* no echo, no line editing, no CR/LF mangling */
+        t.c_cflag |= CLOCAL | CREAD;
+        t.c_cc[VMIN] = 0;
+        t.c_cc[VTIME] = 0;
+        cfsetspeed(&t, B115200);      /* never 1200: that is the bootloader-reset baud rate */
+        if (tcsetattr(fd, TCSANOW, &t) != 0) { close(fd); continue; }
+        tcflush(fd, TCIOFLUSH);
+        port_fd = fd;
+        /* Confirm it really is our firmware before sending anything else. Stale replies (e.g. "OK")
+         * may precede ours, so look for the ID anywhere in the reply. */
+        char buf[256];
+        if (write_all("?\n") == 0 && read_pending(buf, sizeof buf, 500) > 0 && strstr(buf, "SEEEDJIGGLER") != NULL)
+            return port_fd;
+        close_port();
+    }
     return -1;
 }
 
@@ -165,7 +168,6 @@ static int send_lines(const char *const *lines, int n, useconds_t gap_us) {
         if (write_all(lines[i]) != 0) { close_port(); return -1; }
         if (i + 1 < n) usleep(gap_us);
     }
-    tcdrain(port_fd);
     read_pending(sink, sizeof sink, 0); /* keep the receive buffer empty */
 #ifdef FORCE_REOPEN
     close_port();

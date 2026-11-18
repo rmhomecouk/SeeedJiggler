@@ -47,11 +47,16 @@ Stop the LaunchAgent first (`launchctl bootout gui/$(id -u)/com.seeedjiggler`) s
 
 ## Results (2026-11-18, Apple silicon, macOS)
 
-| Test (100 s each, run concurrently) | RSS | fds | `leaks` |
-|-------------------------------------|-----|-----|---------|
-| Steady state, held-open port, no sleep | 3520 KB, flat (2512 KB at the end) | 8, constant | 0 leaks, 0 bytes |
-| Forced re-find/open/verify every cycle | 3648 KB, flat (2752 KB at the end) | 8, constant | 0 leaks, 0 bytes |
-| Board absent, IOKit scan every cycle | 3680 KB, flat (2800 KB at the end) | 7, constant | 0 leaks, 0 bytes |
-| Installed service, 15 min live watch | 2672 → 2656 KB | 7 | 0 leaks |
+Stress runs of the current code, 100 s each, run concurrently:
+
+| Test | RSS (after warm-up) | fds | `leaks` |
+|------|---------------------|-----|---------|
+| Steady state, held-open port, no sleep | 2784 → 2832 KB, flat from t=60 s | 8, constant | 0 leaks, 0 bytes |
+| Forced re-find/open/verify every cycle | 2768 KB, flat | 8, constant | 0 leaks, 0 bytes |
+| Board absent, IOKit scan every cycle | 2784 KB, flat | 7, constant | 0 leaks, 0 bytes |
+
+(The first sample of each run is higher, ~3.5 MB, because start-up pages are later compressed.)
+
+Live service: `leaks` on the installed service reports 0 leaks. An earlier ~9-minute watch of the installed service (previous build) held at 2672 → 2656 KB with 7 fds; it was cut short when the service was stopped for firmware work, so it is **not** a 15-minute result and is not for the current build.
 
 Not covered: a multi-day soak, and the jiggle-send path under stress (not forced, to avoid moving the cursor).

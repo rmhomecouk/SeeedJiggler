@@ -38,22 +38,27 @@ A sleeping host: the firmware never calls the SAMD21's remote-wakeup, so jiggles
 
 ## Verification status
 
-Everything below was observed on real hardware (Seeeduino XIAO M0, macOS), using the firmware's `?` status counters as ground truth for what the board actually received:
+Observed on real hardware (Seeeduino XIAO M0, macOS), using the firmware's `?` status counters as ground truth for what the board actually received:
 
 | Check | Evidence |
 |-------|----------|
-| Heartbeats reach the board | `hb` counter rose by exactly 1 per 5 s cycle (`hb=1…9`), `fb=0` throughout |
+| Heartbeats reach the board | `hb` counter rose by exactly 1 per 5 s cycle, `fb=0` throughout |
 | Jiggles reach the board | each jiggle raised the board's `mv` counter by exactly 2 (`mv=2→4→6→…`) |
-| Real input stops jiggling | after an injected input event the service logged `real input detected`, jiggling stopped, and its idle clock restarted from the real input (effective idle 1.6 s, then resumed only after the threshold) |
+| Real input stops jiggling | after an injected input event the service logged `real input detected`, stopped jiggling, and restarted its idle clock from the real input |
 | Fallback engages when the service is silent | 36 s with no service: board reported `fb=1` |
-| Fallback clears when the service returns | first heartbeat after restart: `fb=0`, `age=1` |
-| Port selection by USB IDs + `SEEEDJIGGLER` reply | board found and verified on every start |
-| Memory | flat 2.5–3.7 MB RSS, constant fd count, `leaks` reports 0 (see [testing.md](testing.md)) |
+| Fallback clears when the service returns | first heartbeat after restart: `fb=0` |
+| **Recovery after the board re-enumerates, with the port held open** | Reflashed the board twice while the service was running (the board drops off USB and returns). The *same* service process (same pid) reconnected on its own; `hb` restarted from ~1 and `fb=0` at +5 s, +15 s and +30 s each time |
+| Port selection by USB IDs + `SEEEDJIGGLER` reply | board found and verified on every start in these tests (but see the stall below) |
+| Jiggler-only build | flashed: board exposes no keyboard interface (usage pairs only mouse/pointer), `T`/`K` commands answer `ERR`, `M` and heartbeats work |
+| Full build | flashed back: keyboard + mouse + pointer interfaces present; unknown commands answer `ERR` |
+| Memory | flat ~2.5–3.8 MB RSS, constant fd count, `leaks` 0 (see [testing.md](testing.md)) |
 
 Not verified:
 
-* **Replug with the new code**: the held-open-port / re-find logic after a physical unplug and replug has not been exercised since the rewrite (the earlier Python version's replug was).
-* **One unexplained start-up stall**: once, right after heavy stress testing, a freshly (re)installed service delivered no heartbeats for its first ~25 s while the process showed a ~144 KB footprint, i.e. it appeared not to have reached `main` yet. It could not be reproduced in five further attempts (including back-to-back installs and clean-environment launches). Suspected cause is a delayed launch of a freshly built binary while the machine was heavily loaded, not the service logic; unconfirmed. Even if it recurs, the board's watchdog covers the gap (it only starts jiggling after 30 s of silence).
-* **Fallback cadence**: the 45 s self-jiggle interval was not measured precisely (the `?` counters do not count fallback moves).
+* **A physical USB unplug/replug with the current code.** Reflashing re-enumerates the board (the strongest substitute available without touching the cable), but it is not the same event as pulling the cable.
+* **The LEDs.** Nobody has looked at them since the firmware changes. In particular, a bug where the TX LED would not light during fallback (a stale `millis()` value) was found by code review and fixed, but the fix was not observed on the board.
+* **Fallback cadence**: the 45 s self-jiggle interval was not measured (the `?` counters do not count fallback moves).
+* **A second XIAO plugged in at the same time**: the service now tries every device with the board's USB IDs and uses the first that answers as SeeedJiggler, but this was not tested with two boards. (Until a device answers `?` correctly it is sent that one line.)
 * **A sleeping Mac**: the firmware never requests USB remote wake-up, so it should not wake a sleeping host; not tested.
 * **Typing/key commands** (`T`, `K`, `C`, …): only lightly tested; US keyboard layout assumed.
+* **One unexplained start-up stall.** Once, right after heavy stress testing, a freshly reinstalled service delivered no heartbeats for at least ~25 s (the board's `age` kept growing) while the process showed a ~144 KB footprint and had no serial port open. It was stopped at that point, so how long it would have lasted is unknown, and the stack sample taken was filtered so aggressively that it shows nothing about where the process was. It did **not** recur in several further attempts, including the same precondition (stop service → heavy stress → install immediately) and back-to-back installs. Cause unknown; a delayed launch of a freshly built binary under load is a guess. If it happens, the board's watchdog covers the gap (it only starts jiggling after 30 s of silence).
