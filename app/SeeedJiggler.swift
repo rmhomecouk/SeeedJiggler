@@ -434,7 +434,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // bar icon or touches the board).
 #if !TESTPORT  // test builds run beside the real app
         if otherInstanceRunning() {
-            _ = alert("SeeedJiggler is already running", "Look for its icon in the menu bar. Only one copy can run at a time.")
+            // Not an NSAlert: a program started by Finder/Spotlight is not allowed to bring its own window to the front,
+            // so the message could stay hidden. osascript's dialog always appears (and gives up after 20 s).
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            let icon = NSHomeDirectory() + "/Applications/SeeedJiggler.app/Contents/Resources/AppIcon.icns"
+            let iconClause = FileManager.default.fileExists(atPath: icon) ? " with icon POSIX file \"\(icon)\"" : ""
+            p.arguments = ["-e", "display dialog \"SeeedJiggler is already running.\\n\\nLook for its icon in the menu bar. Only one copy can run at a time.\" with title \"SeeedJiggler\" buttons {\"OK\"} default button \"OK\"\(iconClause) giving up after 20"]
+            try? p.run(); p.waitUntilExit()
             exit(0)
         }
 #endif

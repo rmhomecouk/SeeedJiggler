@@ -16,6 +16,10 @@ Needs the Xcode command line tools. No logs are written. When the repo is under 
 
 Only one copy can run at a time, because two would both drive the board. Starting a second copy (for example `build/SeeedJiggler` while the login item is running) shows "SeeedJiggler is already running" and exits without creating a second icon or touching the board. The check looks for another process named `SeeedJiggler` owned by you, so it does not interfere with the in-place restart after an update (same process) or with `scripts/install.sh` (which stops the old copy first).
 
+## Launching it by hand
+
+`scripts/install.sh` also creates `~/Applications/SeeedJiggler.app` (a small launcher with its own icon and no Dock icon), so you can start the app from Spotlight (type "SeeedJiggler"), Launchpad or Finder, for example after choosing Quit. The launcher starts the installed program in the background and finishes; it does not contain a copy of the program, so updates keep applying. If the app is already running you get a dialog saying so. `scripts/uninstall.sh` removes it. A program started this way is not supervised by launchd, so it is not restarted after a crash and an update restarts it by itself; the login item is the supervised one. Re-run `scripts/make-app.sh /path/to/program` to rebuild just the launcher.
+
 ## Auto-start
 
 *Start at login* in the menu adds or removes `~/Library/LaunchAgents/com.seeedjiggler.plist` (`RunAtLoad`, `KeepAlive` only after a crash so Quit stays quit, output to `/dev/null`). Turning it off removes the plist for the next login; it does not quit the running app. `scripts/install.sh` does the same thing and also starts the app immediately.

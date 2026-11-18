@@ -44,4 +44,5 @@ cat > "$PLIST" <<PL
 </plist>
 PL
 launchctl bootstrap "$DOMAIN" "$PLIST"
+"$REPO/scripts/make-app.sh" "$BIN"   # ~/Applications/SeeedJiggler.app launcher (Spotlight, Launchpad)
 echo "Installed $LABEL running $BIN. Look for the mouse icon in the menu bar."

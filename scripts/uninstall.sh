@@ -10,4 +10,5 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootout "gui/$(id -u)/com.seeedjiggler.menu" 2>/dev/null || true   # earlier label
 rm -f "$PLIST" "$HOME/Library/LaunchAgents/com.seeedjiggler.menu.plist"
 case "$BIN" in ""|"$REPO"/*) ;; *) rm -f "$BIN" ;; esac
+rm -rf "$HOME/Applications/SeeedJiggler.app"
 echo "Removed $LABEL"

@@ -58,6 +58,7 @@ The idle threshold (default 2 minutes) is chosen in the app's menu; jiggles repe
 | `app/SeeedJiggler.swift` | The macOS app: idle-aware jiggle engine, board detection, menu bar UI, keep-awake, start-at-login |
 | `tools/hid.py` | Optional Python CLI: check the board status, move the mouse |
 | `.github/workflows/release.yml` | Builds the app on every push to `main` and publishes it as the rolling `latest` release that the app's update checker reads |
+| `scripts/make-app.sh`, `app/make_icon.swift` | Create `~/Applications/SeeedJiggler.app`, a launcher with an icon for Spotlight/Launchpad (`install.sh` runs it) |
 | `scripts/build.sh`, `scripts/install.sh`, `scripts/uninstall.sh` | Compile the app; install/remove the login LaunchAgent |
 | `docs/` | Hardware & flashing, the app, serial protocol, design notes, memory/leak testing, troubleshooting |
 
