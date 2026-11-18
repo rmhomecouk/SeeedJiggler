@@ -412,6 +412,7 @@ func makeIcon(_ kind: Icon) -> NSImage {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let menu = NSMenu()
     let awake = KeepAwake()
     let engine: Engine
     let updater = Updater()
@@ -470,8 +471,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + secs) { NSApp.terminate(nil) }
         }
 #endif
-        item.menu = NSMenu()
-        item.menu?.delegate = self
+        // Click toggles jiggling; right-click (or Control/Option-click) opens the menu.
+        menu.delegate = self
+        item.button?.target = self
+        item.button?.action = #selector(statusItemClicked)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         awake.onChange = { [weak self] in self?.saveKeepAwake(); self?.refresh() }
 #if TESTPORT
         if let a = ProcessInfo.processInfo.environment["SJ_SET_AWAKE"] { awake.set(a == "forever" ? .forever : .hours(1)) }
@@ -552,7 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         present = !boardPaths().isEmpty
         if !present { ready = false }
         item.button?.image = makeIcon(currentIcon())
-        item.button?.toolTip = installing ? "Updating…" : statusLine()
+        item.button?.toolTip = (installing ? "Updating…" : statusLine()) + "\nClick: pause / resume jiggling\nRight-click: menu"
     }
 
     func currentIcon() -> Icon {
@@ -570,6 +574,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case 2: return "Paused"
         case 1: return "Jiggling (Mac idle)"
         default: return "Watching (Mac in use)"
+        }
+    }
+
+    @objc func statusItemClicked() {
+        let e = NSApp.currentEvent
+        let wantsMenu = e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true || e?.modifierFlags.contains(.option) == true
+        if wantsMenu {
+            item.menu = menu                 // attached only while it is shown, so a plain click still reaches the action
+            item.button?.performClick(nil)
+        } else {
+            toggleJiggle()
         }
     }
 
@@ -595,6 +610,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: Menu
+
+    func menuDidClose(_ menu: NSMenu) { item.menu = nil }
 
     func menuWillOpen(_ menu: NSMenu) {
         refresh()

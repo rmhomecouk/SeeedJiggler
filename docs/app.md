@@ -52,6 +52,8 @@ Priority when several apply: no board, not responding, paused, keep-awake, jiggl
 
 ## Menu
 
+**Click the icon** to pause or resume jiggling (the same as the *Jiggle when idle* item; the icon changes at once). **Right-click** it, or Control-click or Option-click, to open the menu. The tooltip says so.
+
 * **SeeedJiggler** (the bold title): About box with the version (short commit, `-dirty` if built with uncommitted changes), build date and the GitHub address, with an *Open on GitHub* button. The version is embedded by `scripts/build.sh` as the program's Info.plist.
 * **Status lines**: board connected or not, and Watching / Jiggling / Paused; an update line when one is available, being installed, or just installed.
 * **Jiggle when idle**: tick to jiggle, untick to pause. While paused the app still sends heartbeats, so the board shows the app is present. Saved across restarts.

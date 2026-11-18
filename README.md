@@ -48,7 +48,7 @@ scripts/build.sh && build/SeeedJiggler
 scripts/install.sh
 ```
 
-The idle threshold (default 2 minutes), keep-awake, updates and start at login are in the app's menu; jiggles repeat every 45 s. A launcher app is created in `~/Applications` so it can be started from Spotlight. Details: [docs/app.md](docs/app.md).
+Click the menu bar icon to pause or resume jiggling; right-click for the menu. The idle threshold (default 2 minutes), keep-awake, updates and start at login are in the app's menu; jiggles repeat every 45 s. A launcher app is created in `~/Applications` so it can be started from Spotlight. Details: [docs/app.md](docs/app.md).
 
 ## Repository layout
 
