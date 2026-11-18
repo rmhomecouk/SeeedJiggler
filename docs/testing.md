@@ -40,8 +40,7 @@ Against the emulated board:
 
 * **Pause** (`SJ_PAUSE_AFTER=20`, 52 s run): heartbeats continued every 5 s through and after the pause (t = 22.3 … 47.4); the jiggle that would have come at ~47 s did not (2 `M` lines in total, both at start).
 * **Start at login toggle** (fake home, executable under its `Documents`): the binary was copied to `~/.local/bin/SeeedJiggler` (byte-identical), the plist points at the copy, and toggling again removed the plist. (A first run failed to copy because `/tmp` and `/private/tmp` compared unequal; fixed with `realpath`.)
-* **Several instances on the real board:** `build/SeeedJiggler` started beside the installed app: both processes stayed up for 15 s and the menu bar showed two icons, one green and one orange (the board was held by the first).
-* **Several instances** (emulated) (`SJ_PRINT_STATE_AFTER`): with one emulated board, the first instance drove it and the second reported "in use" (the board saw one instance's heartbeats only); with two emulated boards each instance claimed a different one and each board got its own heartbeats. On the real board, a second instance reported "in use" while the installed app held it, and `hid.py status` still worked (the lock is advisory).
+* **One instance:** a second launch of `build/SeeedJiggler` beside the running login item showed "SeeedJiggler is already running" (screenshot) and did not start a second app. (Earlier, several instances were allowed and each locked its board; that was tested and then reverted at your request.)
 * **launchd `KeepAlive = {SuccessfulExit = false}`** (test job from `/private/tmp`): after the app quit normally (`NSApp.terminate`) it was not restarted (1 run); after `kill -9` it was restarted with a new pid within 9 s.
 
 
@@ -50,11 +49,11 @@ Installed final build (version `5eb09eb-dirty`), 45 s after launch so the first 
 * **17-minute run under launchd** (test build from `/private/tmp` via `launchctl submit`, emulated board, screen locked): 208 heartbeats, largest gap 6.0 s (the board's LED timeout is 30 s), 21 jiggles 50 s apart. This was done to look for App Nap throttling; the app held a `ProcessInfo` activity then; it was later removed (see below). It does not reproduce "user busy in another app".
 * **Keep-awake (`pmset`):** with the assertions held for 26 minutes (display sleep setting 20 min), no "Display is turned off" event occurred after the display was woken. The session was already locked when the test began, so this shows display sleep is prevented, not that the lock is.
 
-* **Updater** (`tests/test-updater.sh`, local fake GitHub): update offered, binary replaced, process re-executed as the new version, corrupted checksum refused with the binary untouched.
+* **Updater** (`tests/test-updater.sh`, local fake GitHub): update offered, binary replaced, process re-executed as the new version; refused with the binary untouched for a corrupted checksum, a program that cannot run, and a release that changed between check and download.
 
 * **No App Nap token:** the app used to hold a `ProcessInfo` activity against App Nap. A test build without it, run under launchd for 18 minutes while the Mac was in use for other things, still sent 233 heartbeats with a largest gap of 6.0 s, so the token was removed.
 * **Pause survives restart:** pausing, quitting and relaunching shows paused; unpausing, quitting and relaunching shows not paused (`SJ_PRINT_MODE`).
-* **Pause on the real board, re-enumeration, second instance:** see [how-it-works.md](how-it-works.md#verification-status).
+* **Pause on the real board and re-enumeration:** see [how-it-works.md](how-it-works.md#verification-status).
 
 ## Not covered
 

@@ -37,7 +37,7 @@ func parentNum(_ s: io_object_t, _ key: String) -> Int? {
 /// Callout device paths (/dev/cu.*) of every serial device with the board's USB IDs. Looks only; opens nothing.
 func boardPaths() -> [String] {
 #if TESTPORT  // test build only (-DTESTPORT): use a pseudo-terminal that emulates the board
-    if let p = ProcessInfo.processInfo.environment["SJ_PORT"] { return p.split(separator: ":").map(String.init) }
+    if let p = ProcessInfo.processInfo.environment["SJ_PORT"] { return [p] }
 #endif
     var it: io_iterator_t = 0
     guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(kIOSerialBSDServiceValue), &it) == KERN_SUCCESS
@@ -73,8 +73,7 @@ final class Engine {
     private var paused = false
     private var idleThreshold: Double
     private var lastReal = mono(), lastJiggle = -1.0
-    var onUpdate: ((Bool, Int, Bool) -> Void)?  // (board ready, mode, board in use by another instance)
-    private var busy = false
+    var onUpdate: ((Bool, Int) -> Void)?  // (board ready, mode)
 
     init(idle: Double, paused: Bool) { idleThreshold = idle; self.paused = paused }
 
@@ -115,8 +114,7 @@ final class Engine {
             }
         }
         let ready = fd >= 0, mode = paused ? 2 : (lastJiggle >= 0 ? 1 : 0)
-        let inUse = busy && !ready
-        DispatchQueue.main.async { self.onUpdate?(ready, mode, inUse) }
+        DispatchQueue.main.async { self.onUpdate?(ready, mode) }
     }
 
     // MARK: Serial
@@ -144,13 +142,9 @@ final class Engine {
     /// Open (if needed) and verify a board. Cheap when already open.
     private func ensurePort() -> Bool {
         if fd >= 0 { return true }
-        busy = false
         for path in boardPaths() {  // a second XIAO may exist; the first that answers as SeeedJiggler wins
             let f = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC)  // not inherited across the update re-exec
             if f < 0 { continue }
-            // Several instances may run (e.g. one per board): each claims the boards it can lock. The lock is advisory
-            // and held while the port is open, so a second instance leaves a claimed board alone.
-            if flock(f, LOCK_EX | LOCK_NB) != 0 { busy = true; close(f); continue }
             var t = termios()
             if tcgetattr(f, &t) != 0 { close(f); continue }
             cfmakeraw(&t)
@@ -285,19 +279,23 @@ final class Updater {
         }
     }
 
-    /// Runs `program --version` (5 s limit) and returns its output, or nil if it cannot run.
-    static func reportedVersion(_ path: String) -> String? {
+    /// Runs `program --version` (20 s limit: the first run of a new program can be slow while macOS checks it).
+    /// Returns its output, or nil plus a reason if it cannot run.
+    static func reportedVersion(_ path: String) -> (version: String?, why: String) {
         let p = Process(), pipe = Pipe()
         p.executableURL = URL(fileURLWithPath: path); p.arguments = ["--version"]
-        p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return nil }
+        p.standardOutput = pipe; p.standardError = FileHandle.nullDevice; p.standardInput = FileHandle.nullDevice
+        do { try p.run() } catch { return (nil, "could not start it: \(error.localizedDescription)") }
         let done = DispatchSemaphore(value: 0)
         DispatchQueue.global().async { p.waitUntilExit(); done.signal() }
-        if done.wait(timeout: .now() + 5) == .timedOut { p.terminate(); return nil }
-        guard p.terminationStatus == 0 else { return nil }
+        if done.wait(timeout: .now() + 20) == .timedOut { p.terminate(); return (nil, "it did not answer within 20 s") }
+        guard p.terminationStatus == 0 else {
+            let how = p.terminationReason == .uncaughtSignal ? "killed by signal" : "exit status"
+            return (nil, "\(how) \(p.terminationStatus)")
+        }
         let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return out.isEmpty ? nil : out
+        return out.isEmpty ? (nil, "it printed nothing") : (out, "")
     }
 
     /// Download, verify, replace the running binary, and re-exec. Returns an error message, or never returns on success.
@@ -318,8 +316,13 @@ final class Updater {
                     chmod(tmp, 0o755)
                 } catch { return fail("Cannot write next to \(exe): \(error.localizedDescription)") }
                 // Run the download before trusting it: it must start on this Mac and report the release's commit.
-                guard Updater.reportedVersion(tmp).map({ rel.sha.hasPrefix($0) }) == true else {
-                    unlink(tmp); return fail("The downloaded program does not run on this Mac, so it was not installed")
+                let vet = Updater.reportedVersion(tmp)
+                guard let v = vet.version else {
+                    unlink(tmp); return fail("The downloaded program does not run on this Mac (\(vet.why)), so it was not installed")
+                }
+                guard rel.sha.hasPrefix(v) else {
+                    // The "latest" release is replaced on every push, so it can change between the check and the download.
+                    unlink(tmp); return fail("A newer release was published while downloading (it is \(v), the check saw \(rel.sha.prefix(7))). Nothing was installed; choose Check for updates again.")
                 }
                 unlink(old)
                 guard rename(exe, old) == 0, rename(tmp, exe) == 0 else {
@@ -383,7 +386,7 @@ func makeIcon(_ kind: Icon) -> NSImage {
 // MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    lazy var item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let awake = KeepAwake()
     let engine: Engine
     let updater = Updater()
@@ -393,7 +396,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var present = false      // a device with the board's USB IDs exists
     var ready = false        // ...and it answered as SeeedJiggler
-    var inUse = false        // ...but another SeeedJiggler instance has it
     var mode = 0             // 0 watching, 1 jiggling, 2 paused
 
     override init() {
@@ -409,6 +411,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // One copy only: two would both drive the board. A second launch says so and exits (before it creates a menu
+        // bar icon or touches the board).
+#if !TESTPORT  // test builds run beside the real app
+        if otherInstanceRunning() {
+            _ = alert("SeeedJiggler is already running", "Look for its icon in the menu bar. Only one copy can run at a time.")
+            exit(0)
+        }
+#endif
         if let exe = Bundle.main.executablePath { unlink(realPath(exe) + ".old") }  // left by a successful update
 #if TESTPORT
         if ProcessInfo.processInfo.environment["SJ_TOGGLE_LOGIN"] == "1" { toggleLogin(); exit(0) }
@@ -423,9 +433,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = NSMenu()
         item.menu?.delegate = self
         awake.onChange = { [weak self] in self?.refresh() }
-        engine.onUpdate = { [weak self] r, m, u in  // only on change: the 5 s tick must not redraw anything
-            guard let self = self, r != self.ready || m != self.mode || u != self.inUse else { return }
-            self.ready = r; self.mode = m; self.inUse = u; self.refresh()
+        engine.onUpdate = { [weak self] r, m in  // only on change: the 5 s tick must not redraw anything
+            guard let self = self, r != self.ready || m != self.mode else { return }
+            self.ready = r; self.mode = m; self.refresh()
         }
         startHotplugWatch()
         engine.start()
@@ -435,12 +445,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         RunLoop.main.add(t, forMode: .common)
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.autoCheckNow() }
 #if TESTPORT
-        if let n = ProcessInfo.processInfo.environment["SJ_PRINT_STATE_AFTER"], let secs = Double(n) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + secs) { [weak self] in
-                guard let self = self else { return }
-                print("state ready=\(self.ready) inUse=\(self.inUse) mode=\(self.mode)"); fflush(stdout); exit(0)
-            }
-        }
         if ProcessInfo.processInfo.environment["SJ_PRINT_MODE"] == "1" { print("mode", mode, "paused-pref", UserDefaults.standard.bool(forKey: "paused")); fflush(stdout); exit(0) }
         if ProcessInfo.processInfo.environment["SJ_PRINT_VERSION"] == "1" { print(Updater.version()); fflush(stdout); exit(0) }
         if ProcessInfo.processInfo.environment["SJ_AUTO_INSTALL"] == "1" {
@@ -482,6 +486,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// True if another SeeedJiggler of this user is already running.
+    func otherInstanceRunning() -> Bool {
+        var pids = [pid_t](repeating: 0, count: 4096)
+        let bytes = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        guard bytes > 0 else { return false }
+        var name = [CChar](repeating: 0, count: 64)
+        for p in pids.prefix(Int(bytes) / MemoryLayout<pid_t>.size) where p > 0 && p != getpid() {
+            if proc_name(p, &name, UInt32(name.count)) > 0 && String(cString: name) == "SeeedJiggler" {
+                var info = proc_bsdshortinfo()
+                if proc_pidinfo(p, PROC_PIDT_SHORTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdshortinfo>.size)) > 0,
+                   info.pbsi_uid == getuid() { return true }
+            }
+        }
+        return false
+    }
+
     func refresh() {
         present = !boardPaths().isEmpty
         if !present { ready = false }
@@ -499,7 +519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func statusLine() -> String {
         if !present { return "Board not found" }
-        if !ready { return inUse ? "Board is used by another SeeedJiggler" : "Board not responding" }
+        if !ready { return "Board not responding" }
         switch mode {
         case 2: return "Paused"
         case 1: return "Jiggling (Mac idle)"
@@ -523,13 +543,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         head.attributedTitle = NSAttributedString(string: "SeeedJiggler", attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
         menu.addItem(head)
         let ok = present && ready
-        let dot = NSMenuItem(title: ok ? "● Board connected" : (present ? (inUse ? "● Board in use elsewhere" : "● Board not responding") : "● Board not found"), action: nil, keyEquivalent: "")
+        let dot = NSMenuItem(title: ok ? "● Board connected" : (present ? "● Board not responding" : "● Board not found"), action: nil, keyEquivalent: "")
         dot.attributedTitle = NSAttributedString(string: dot.title, attributes: [
             .foregroundColor: ok ? NSColor.systemGreen : NSColor.systemOrange])
         menu.addItem(dot)
         _ = add(statusLine())
         if case .available(let v) = updater.state {
-            let u = NSMenuItem(title: "⬆ Update available (\(v))…", action: #selector(offerUpdate), keyEquivalent: "")
+            let u = NSMenuItem(title: "⬆ Update available (\(v))…", action: #selector(checkUpdatesNow), keyEquivalent: "")  // re-checks first: the release may have changed since the last check
             u.target = self
             menu.addItem(u)
         }
@@ -626,7 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self = self else { return }
             self.refresh()
             switch st {
-            case .available: self.offerUpdate()
+            case .available: self.confirmInstall()
             case .upToDate: _ = self.alert("SeeedJiggler is up to date", "Version \(Updater.version())")
             case .failed(let m): _ = self.alert("Could not check for updates", m)
             case .unknown: break
@@ -634,7 +654,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc func offerUpdate() {
+    /// Asks before installing. Uses the release from the check that has just run, never a stale one.
+    func confirmInstall() {
         guard let rel = updater.release else { return }
         let dirty = Updater.version().contains("dirty") ? "\n\nThis build has local changes; they will be replaced." : ""
         let go = alert("Install the update?",

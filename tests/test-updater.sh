@@ -45,3 +45,12 @@ OUT="$(perl -e 'alarm 60; exec @ARGV' "$T/app3" 2>&1 || true)"; echo "$OUT"
 cmp "$T/app3" "$T/old" && echo "PASS: binary untouched"
 [ ! -e "$T/app3.new" ] && [ ! -e "$T/app3.old" ] && echo "PASS: no leftovers"
 echo "$OUT" | grep -q "does not run" && echo "PASS: refused because it cannot run"
+
+kill $SRV; wait $SRV 2>/dev/null || true
+echo "--- release replaced between check and download must be refused with an explanation"
+OTHER40=ccccccc$(printf '0%.0s' $(seq 1 33))
+python3 "$REPO/tests/fake_github.py" 18765 "$T/new" "$OTHER40" & SRV=$!; sleep 1
+cp "$T/old" "$T/app4"
+OUT="$(perl -e 'alarm 60; exec @ARGV' "$T/app4" 2>&1 || true)"; echo "$OUT"
+cmp "$T/app4" "$T/old" && echo "PASS: binary untouched"
+echo "$OUT" | grep -q "newer release was published" && echo "PASS: explained as a changed release"
