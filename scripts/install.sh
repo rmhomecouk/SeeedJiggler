@@ -15,9 +15,6 @@ DEST="${BIN_DIR:-}"
 case "$REPO" in "$HOME"/Documents/*|"$HOME"/Desktop/*|"$HOME"/Downloads/*) DEST="${DEST:-$HOME/.local/bin}" ;; esac
 
 "$REPO/scripts/build.sh"
-# migrate from the earlier label (com.seeedjiggler.menu): stop and remove it
-launchctl bootout "$DOMAIN/com.seeedjiggler.menu" 2>/dev/null || true
-rm -f "$HOME/Library/LaunchAgents/com.seeedjiggler.menu.plist"
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 for _ in $(seq 1 50); do
   launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break

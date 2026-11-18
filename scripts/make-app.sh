@@ -1,6 +1,7 @@
 #!/bin/bash
 # Create ~/Applications/SeeedJiggler.app so SeeedJiggler can be started from Spotlight, Launchpad or Finder.
-# The bundle is only a launcher: it starts the installed program (so updates keep working) and has no Dock icon.
+# The bundle is only a launcher: it starts the login-item job if there is one, else the installed program (so
+# updates keep working), and has no Dock icon.
 #   scripts/make-app.sh /path/to/the/program      (install.sh does this for you)
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,6 +28,11 @@ PL
 # that LaunchServices does not know, and it would get no menu bar icon.) If it is missing, say so.
 cat > "$APP/Contents/MacOS/SeeedJiggler" <<SH
 #!/bin/sh
+# If the login item is set up but not running (e.g. after Quit), start that job so launchd supervises the program.
+JOB="gui/\$(id -u)/com.seeedjiggler"
+if launchctl print "\$JOB" >/dev/null 2>&1 && ! launchctl print "\$JOB" 2>/dev/null | grep -q "state = running"; then
+  launchctl kickstart "\$JOB" >/dev/null 2>&1 && exit 0
+fi
 if [ -x "$PROG" ]; then
   nohup "$PROG" "\$@" >/dev/null 2>&1 &
   exit 0

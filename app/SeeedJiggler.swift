@@ -6,7 +6,8 @@
 //   jiggles reset the HID idle clock, so the time of the last *real* input is tracked separately.
 // - The board is found by USB vendor/product ID and confirmed by its "SEEEDJIGGLER" reply to "?" before use.
 // - No logging, no polling for hot-plug (IOKit notifications), nothing written to disk except the optional
-//   start-at-login plist and a few preferences (idle threshold, paused, auto-update-check) when you change them.
+//   start-at-login plist and a few preferences (idle threshold, paused, keep-awake, automatic update check) that
+//   are saved when they change.
 //
 // Build: scripts/build.sh
 
@@ -24,6 +25,7 @@ let repoURL = URL(string: "https://github.com/\(repoSlug)")!
 let releaseAsset = "SeeedJiggler-macos-arm64"
 let idleChoices: [(String, Double)] = [("1 minute", 60), ("2 minutes", 120), ("5 minutes", 300), ("10 minutes", 600), ("15 minutes", 900)]
 let defaultIdle = 120.0, jiggleEvery = 45.0, pollSecs = 5.0
+let replacesVar = "SEEEDJIGGLER_REPLACES"  // set by an updating copy on the copy it starts: its pid, ignored by the one-instance check
 
 // MARK: - Board discovery
 
@@ -143,7 +145,7 @@ final class Engine {
     private func ensurePort() -> Bool {
         if fd >= 0 { return true }
         for path in boardPaths() {  // a second XIAO may exist; the first that answers as SeeedJiggler wins
-            let f = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC)  // not inherited across the update re-exec
+            let f = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC)  // not inherited by the program started after an update
             if f < 0 { continue }
             var t = termios()
             if tcgetattr(f, &t) != 0 { close(f); continue }
@@ -181,7 +183,8 @@ final class KeepAwake {
     private(set) var until: Date?
     var onChange: (() -> Void)?
 
-    func set(_ m: Awake) {
+    /// `until` restores a timed choice with its original end time (e.g. after a restart).
+    func set(_ m: Awake, until end: Date? = nil) {
         release()
         mode = m
         guard m != .off else { onChange?(); return }
@@ -193,13 +196,18 @@ final class KeepAwake {
         }
         if ids.isEmpty { mode = .off }  // could not hold an assertion: do not claim to be awake
         if case .hours(let h) = mode {
-            until = Date().addingTimeInterval(Double(h) * 3600)
-            let t = Timer(timeInterval: Double(h) * 3600, repeats: false) { [weak self] _ in self?.set(.off) }
+            let seconds = end.map { $0.timeIntervalSinceNow } ?? Double(h) * 3600
+            if seconds <= 0 { return set(.off) }
+            until = Date().addingTimeInterval(seconds)
+            let t = Timer(timeInterval: seconds, repeats: false) { [weak self] _ in self?.set(.off) }
             RunLoop.main.add(t, forMode: .common)
             timer = t
         }
         onChange?()
     }
+
+    /// Drops the assertions (they belong to this process) without changing the saved choice, before an update restart.
+    func releaseForRestart() { release() }
 
     private func release() {
         for id in ids { IOPMAssertionRelease(id) }
@@ -298,29 +306,27 @@ final class Updater {
         return out.isEmpty ? (nil, "it printed nothing") : (out, "")
     }
 
-    /// Starts the new program. Re-executing in place (execv) left a blank, stale menu bar item behind, so instead:
-    /// under launchd (the login item) exit with a failure status, which KeepAlive turns into a fresh launch of the
-    /// new program; otherwise start the new program and exit.
+    /// Starts the new program: under launchd (the login item) exit with a failure status, which KeepAlive turns into a
+    /// fresh launch of the new program; otherwise start the new program (telling it which process it replaces, so its
+    /// one-instance check ignores this one) and exit.
     static func restart(_ exe: String, old: String, failed: @escaping (String) -> Void) {
         let svc = ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"]
         var underLaunchd = svc != nil && svc != "0" && !(svc!.hasPrefix("application."))
 #if TESTPORT
-        if ProcessInfo.processInfo.environment["SJ_RESTART"] == "exec" {  // tests that only need the in-place restart
-            var args: [UnsafeMutablePointer<CChar>?] = CommandLine.arguments.map { strdup($0) } + [nil]
-            execv(exe, &args); rename(old, exe); return failed("The update was installed but the app could not restart")
-        }
-        underLaunchd = ProcessInfo.processInfo.environment["SJ_RESTART"] == "launchd"
+        underLaunchd = ProcessInfo.processInfo.environment["SJ_RESTART"] == "launchd"  // tests choose the path
 #endif
         if underLaunchd { exit(75) }  // EX_TEMPFAIL: not a successful exit, so launchd starts the new program
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe); p.arguments = Array(CommandLine.arguments.dropFirst())
+        var env = ProcessInfo.processInfo.environment; env[replacesVar] = String(getpid()); p.environment = env
         do { try p.run(); exit(0) } catch {
             rename(old, exe)  // could not start the new program: put the working one back
             failed("The update was installed but the app could not restart: \(error.localizedDescription)")
         }
     }
 
-    /// Download, verify, replace the running binary, and re-exec. Returns an error message, or never returns on success.
+    /// Download, verify and replace the running program, then restart it. Reports a failure through `failed`; on success it
+    /// does not return (the process is replaced by the new one).
     func install(_ rel: Release, beforeRestart: @escaping () -> Void, failed: @escaping (String) -> Void) {
         func fail(_ m: String) { DispatchQueue.main.async { failed(m) } }
         Updater.session.dataTask(with: rel.checksum) { sumData, _, _ in
@@ -413,6 +419,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var notePort: IONotificationPortRef?
     var idleChoice: Double
 
+    var installing = false   // an update is being downloaded and installed
+    var justUpdated: String? // set for the run that follows a successful update
     var present = false      // a device with the board's USB IDs exists
     var ready = false        // ...and it answered as SeeedJiggler
     var mode = 0             // 0 watching, 1 jiggling, 2 paused
@@ -423,7 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 #if TESTPORT
         if let t = ProcessInfo.processInfo.environment["SJ_IDLE"], let v = Double(t), v > 0 { idleChoice = v }
 #endif
-        let wasPaused = UserDefaults.standard.bool(forKey: "paused")  // pause survives quit, login and updates
+        let wasPaused = UserDefaults.standard.bool(forKey: "paused")  // pause and keep-awake survive quit, login and updates
         engine = Engine(idle: idleChoice, paused: wasPaused)
         super.init()
         mode = wasPaused ? 2 : 0
@@ -432,8 +440,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         // One copy only: two would both drive the board. A second launch says so and exits (before it creates a menu
         // bar icon or touches the board).
-#if !TESTPORT  // test builds run beside the real app
-        if otherInstanceRunning() {
+#if TESTPORT
+        let skipGuard = ProcessInfo.processInfo.environment["SJ_NO_GUARD"] == "1"  // tests run beside the real app
+#else
+        let skipGuard = false
+#endif
+        if !skipGuard && otherInstanceRunning() {
             // Not an NSAlert: a program started by Finder/Spotlight is not allowed to bring its own window to the front,
             // so the message could stay hidden. osascript's dialog always appears (and gives up after 20 s).
             let p = Process()
@@ -444,21 +456,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try? p.run(); p.waitUntilExit()
             exit(0)
         }
-#endif
-        if let exe = Bundle.main.executablePath { unlink(realPath(exe) + ".old") }  // left by a successful update
+        if let exe = Bundle.main.executablePath {  // a leftover .old means an update has just been installed
+            let old = realPath(exe) + ".old"
+            if FileManager.default.fileExists(atPath: old) { justUpdated = Updater.version(); unlink(old) }
+        }
+        restoreKeepAwake()
 #if TESTPORT
         if ProcessInfo.processInfo.environment["SJ_TOGGLE_LOGIN"] == "1" { toggleLogin(); exit(0) }
         if let n = ProcessInfo.processInfo.environment["SJ_PAUSE_AFTER"], let secs = Double(n) {
             DispatchQueue.main.asyncAfter(deadline: .now() + secs) { [weak self] in self?.toggleJiggle() }
         }
-        if ProcessInfo.processInfo.environment["SJ_ABOUT"] == "1" { DispatchQueue.main.async { self.showAbout() } }
         if let n = ProcessInfo.processInfo.environment["SJ_QUIT_AFTER"], let secs = Double(n) {
             DispatchQueue.main.asyncAfter(deadline: .now() + secs) { NSApp.terminate(nil) }
         }
 #endif
         item.menu = NSMenu()
         item.menu?.delegate = self
-        awake.onChange = { [weak self] in self?.refresh() }
+        awake.onChange = { [weak self] in self?.saveKeepAwake(); self?.refresh() }
+#if TESTPORT
+        if let a = ProcessInfo.processInfo.environment["SJ_SET_AWAKE"] { awake.set(a == "forever" ? .forever : .hours(1)) }
+#endif
         engine.onUpdate = { [weak self] r, m in  // only on change: the 5 s tick must not redraw anything
             guard let self = self, r != self.ready || m != self.mode else { return }
             self.ready = r; self.mode = m; self.refresh()
@@ -471,7 +488,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         RunLoop.main.add(t, forMode: .common)
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.autoCheckNow() }
 #if TESTPORT
-        if ProcessInfo.processInfo.environment["SJ_PRINT_MODE"] == "1" { print("mode", mode, "paused-pref", UserDefaults.standard.bool(forKey: "paused")); fflush(stdout); exit(0) }
+        if ProcessInfo.processInfo.environment["SJ_PRINT_MODE"] == "1" {
+            print("mode", mode, "awake", awake.mode, "until", awake.until != nil); fflush(stdout); exit(0)
+        }
         if ProcessInfo.processInfo.environment["SJ_PRINT_VERSION"] == "1" { print(Updater.version()); fflush(stdout); exit(0) }
         if ProcessInfo.processInfo.environment["SJ_AUTO_INSTALL"] == "1" {
             updater.check { [weak self] st in
@@ -518,7 +537,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let bytes = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
         guard bytes > 0 else { return false }
         var name = [CChar](repeating: 0, count: 64)
-        for p in pids.prefix(Int(bytes) / MemoryLayout<pid_t>.size) where p > 0 && p != getpid() {
+        let replaced = ProcessInfo.processInfo.environment[replacesVar].flatMap { pid_t($0) } ?? -1  // the copy that started us
+        for p in pids.prefix(Int(bytes) / MemoryLayout<pid_t>.size) where p > 0 && p != getpid() && p != replaced {
             if proc_name(p, &name, UInt32(name.count)) > 0 && String(cString: name) == "SeeedJiggler" {
                 var info = proc_bsdshortinfo()
                 if proc_pidinfo(p, PROC_PIDT_SHORTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdshortinfo>.size)) > 0,
@@ -532,7 +552,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         present = !boardPaths().isEmpty
         if !present { ready = false }
         item.button?.image = makeIcon(currentIcon())
-        item.button?.toolTip = statusLine()
+        item.button?.toolTip = installing ? "Updating…" : statusLine()
     }
 
     func currentIcon() -> Icon {
@@ -550,6 +570,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case 2: return "Paused"
         case 1: return "Jiggling (Mac idle)"
         default: return "Watching (Mac in use)"
+        }
+    }
+
+    // MARK: Keep-awake persistence
+
+    func saveKeepAwake() {
+        let d = UserDefaults.standard
+        switch awake.mode {
+        case .off: d.removeObject(forKey: "awakeMode"); d.removeObject(forKey: "awakeUntil")
+        case .forever: d.set("forever", forKey: "awakeMode"); d.removeObject(forKey: "awakeUntil")
+        case .hours(let h): d.set("hours\(h)", forKey: "awakeMode"); d.set(awake.until, forKey: "awakeUntil")
+        }
+    }
+
+    func restoreKeepAwake() {
+        let d = UserDefaults.standard
+        switch d.string(forKey: "awakeMode") {
+        case "forever": awake.set(.forever)
+        case "hours1": awake.set(.hours(1), until: d.object(forKey: "awakeUntil") as? Date)
+        case "hours4": awake.set(.hours(4), until: d.object(forKey: "awakeUntil") as? Date)
+        default: break
         }
     }
 
@@ -574,10 +615,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .foregroundColor: ok ? NSColor.systemGreen : NSColor.systemOrange])
         menu.addItem(dot)
         _ = add(statusLine())
-        if case .available(let v) = updater.state {
-            let u = NSMenuItem(title: "⬆ Update available (\(v))…", action: #selector(checkUpdatesNow), keyEquivalent: "")  // re-checks first: the release may have changed since the last check
-            u.target = self
-            menu.addItem(u)
+        if installing {
+            _ = add("⏳ Updating… the app will restart")
+        } else if case .available(let v) = updater.state {
+            // re-checks first: the release may have changed since the last check
+            _ = add("⬆ Update available (\(v))…", #selector(checkUpdatesNow))
+        } else if let v = justUpdated {
+            _ = add("✓ Updated to \(v)")
         }
         menu.addItem(.separator())
 
@@ -604,7 +648,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 .foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.menuFont(ofSize: 11)])
             menu.addItem(d)
         }
-        let idleItem = NSMenuItem(title: "Idle threshold", action: nil, keyEquivalent: "")
+        let idleName = idleChoices.first { $0.1 == idleChoice }?.0 ?? "\(Int(idleChoice)) s"
+        let idleItem = NSMenuItem(title: "Idle threshold: \(idleName)", action: nil, keyEquivalent: "")
         let idleSub = NSMenu(); idleSub.autoenablesItems = false
         for (title, secs) in idleChoices {
             let mi = NSMenuItem(title: title, action: #selector(setIdle(_:)), keyEquivalent: "")
@@ -614,7 +659,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         idleItem.submenu = idleSub
         menu.addItem(idleItem)
         menu.addItem(.separator())
-        _ = add("Check for updates…", #selector(checkUpdatesNow))
+        let checkItem = add("Check for updates…", #selector(checkUpdatesNow))
+        checkItem.isEnabled = !installing
         _ = add("Check for updates automatically", #selector(toggleAutoCheck), on: autoCheck)
         _ = add("Start at login", #selector(toggleLogin), on: loginEnabled())
         menu.addItem(.separator())
@@ -641,15 +687,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "unknown (not built with scripts/build.sh)"
         let built = info?["CFBundleVersion"] as? String ?? "unknown"
-        let alert = NSAlert()
-        alert.messageText = "SeeedJiggler"
-        alert.icon = NSImage(systemSymbolName: "computermouse", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 48, weight: .regular))  // otherwise a generic folder icon
-        alert.informativeText = "Version \(version)\nBuilt \(built)\n\n\(repoURL.absoluteString)"
-        alert.addButton(withTitle: "Open on GitHub")
-        alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)  // an accessory app is not frontmost by default
-        if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(repoURL) }
+        if alert("SeeedJiggler", "Version \(version)\nBuilt \(built)\n\n\(repoURL.absoluteString)", buttons: ["Open on GitHub", "OK"]) {
+            NSWorkspace.shared.open(repoURL)
+        }
     }
 
     @objc func toggleAutoCheck() {
@@ -668,6 +708,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func checkUpdatesNow() {
+        guard !installing else { return }
         updater.check { [weak self] st in
             guard let self = self else { return }
             self.refresh()
@@ -687,9 +728,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let go = alert("Install the update?",
                        "You have \(Updater.version()). Latest on GitHub is \(rel.sha.prefix(7)).\n\nThe app downloads it, checks its SHA-256, replaces itself and restarts. Jiggling pauses for a moment.\(dirty)",
                        buttons: ["Install and Restart", "Cancel"])
-        guard go else { return }
-        updater.install(rel, beforeRestart: { [weak self] in self?.awake.set(.off) },
-                        failed: { [weak self] m in _ = self?.alert("Update failed", m) })
+        guard go, !installing else { return }
+        installing = true; refresh()
+        updater.install(rel, beforeRestart: { [weak self] in self?.awake.releaseForRestart() },
+                        failed: { [weak self] m in
+                            self?.installing = false; self?.refresh()
+                            _ = self?.alert("Update failed", m)
+                        })
     }
 
     @objc func quit() { NSApp.terminate(nil) }

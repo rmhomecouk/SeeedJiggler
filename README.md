@@ -2,9 +2,9 @@
 
 [![release](https://github.com/rmhomecouk/SeeedJiggler/actions/workflows/release.yml/badge.svg)](https://github.com/rmhomecouk/SeeedJiggler/actions/workflows/release.yml)
 
-A tiny hardware mouse jiggler built from a **Seeeduino XIAO (SAMD21)**, plus a macOS **menu bar app** that only jiggles when you are actually idle, shows whether the board is connected, and can keep the Mac awake. The app is one Swift file: no logging, nothing written to disk while it runs, nothing to install on the target besides the app.
+A tiny hardware mouse jiggler built from a **Seeeduino XIAO (SAMD21)**, plus a macOS **menu bar app** that only jiggles when you are actually idle, shows whether the board is connected, and can keep the Mac awake. The app is one Swift file: no logging, and nothing written to disk while it runs apart from its saved settings.
 
-The XIAO shows up to the computer as a genuine USB mouse, so the activity is real HID input — it keeps chat/presence status "Available" and stops screen lock/sleep timers, with nothing to install on the target machine except the optional app.
+The XIAO shows up to the computer as a genuine USB mouse, so the activity is real HID input: it keeps chat/presence status "Available" and stops screen lock/sleep timers. Apple silicon Macs, macOS 13 or later.
 
 > **Use responsibly.** Check your employer's acceptable-use policy before using any jiggler on a work machine. This project is provided for personal use and learning.
 
@@ -19,7 +19,7 @@ The XIAO shows up to the computer as a genuine USB mouse, so the activity is rea
  └──────────────────────┘                     └────────────────────────────┘
 ```
 
-* **Normal mode** – the app watches macOS idle time. After 120 s with no real input it nudges the cursor 8 px and back every 45 s. Real input from you resets everything. The app logs nothing and writes nothing to disk.
+* **Normal mode** – the app watches macOS idle time. After 120 s with no real input it nudges the cursor 8 px and back every 45 s. Real input from you resets everything. 
 * **The app is in charge** – it sends a heartbeat every 5 s, and the board does nothing on its own: **it never moves the mouse unless the app tells it to**. If the board hears no heartbeat for 30 s (app quit, crashed, not started after a reboot) it only blinks its yellow LED, so you can see the app is gone. Quit the app and jiggling stops.
 * **LEDs** – solid yellow: connected and app healthy · slow blink: connected but app silent (board idle) · off: no USB host · TX LED flashes on mouse moves.
 
@@ -48,7 +48,7 @@ scripts/build.sh && build/SeeedJiggler
 scripts/install.sh
 ```
 
-The idle threshold (default 2 minutes) is chosen in the app's menu; jiggles repeat every 45 s. Start at login is also a menu option. Details: [docs/app.md](docs/app.md).
+The idle threshold (default 2 minutes), keep-awake, updates and start at login are in the app's menu; jiggles repeat every 45 s. A launcher app is created in `~/Applications` so it can be started from Spotlight. Details: [docs/app.md](docs/app.md).
 
 ## Repository layout
 
@@ -77,9 +77,9 @@ Protocol reference: [docs/protocol.md](docs/protocol.md).
 
 ## Status & limitations
 
-* Tested on macOS with one XIAO (SAMD21). The mouse is **relative only** (no absolute positioning).
+* Tested with one XIAO (SAMD21). The mouse is **relative only** (no absolute positioning).
 * The app must be running for anything to jiggle: after a reboot, until you log in, or after Quit, nothing does. Turn on *Start at login* (or run `scripts/install.sh`). The board no longer covers for a stopped or hung app.
-* What has and has not been verified on hardware — heartbeats, jiggle delivery, real-input detection, leak tests — is listed in [docs/how-it-works.md](docs/how-it-works.md#verification-status). Pause and replug with the current code are listed as unverified there.
+* What has and has not been verified on hardware (heartbeats, jiggle delivery, pause, unplug/replug, real-input detection, leak tests) is listed in [docs/how-it-works.md](docs/how-it-works.md#verification-status) and [docs/testing.md](docs/testing.md).
 * The board's USB core never issues a remote-wake request, so it should not wake a sleeping computer; this was not tested empirically.
 
 ## License

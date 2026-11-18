@@ -1,8 +1,8 @@
-# Memory and leak testing
+# Testing
+
+## Memory and leaks
 
 The app is meant to run for months, so it is checked for leaks and unbounded growth.
-
-## What the engine holds
 
 | Resource | Lifetime |
 |----------|----------|
@@ -11,9 +11,7 @@ The app is meant to run for months, so it is checked for leaks and unbounded gro
 | IOKit serial-device iterator and services (board lookup) | per lookup (every cycle while no port is open, and on hot-plug), released on every path |
 | Serial port file descriptor | opened when the board is found, held; closed on any write error or failed verification |
 | Hot-plug notification port and its two iterators | created once at launch |
-| Power assertions (keep-awake) | created on demand, released on Off, timer end or quit |
-
-## Tools
+| Power assertions (keep-awake) | created on demand, released on Off, timer end, restart or quit |
 
 ```bash
 leaks $(pgrep -x SeeedJiggler)                    # expect: "0 leaks for 0 total leaked bytes"
@@ -21,46 +19,55 @@ ps -o pid,rss,command -p $(pgrep -x SeeedJiggler) # rss in KB (includes shared A
 lsof -p $(pgrep -x SeeedJiggler) | wc -l          # open file descriptors should stay constant
 ```
 
-## Emulated-board test
+Result (installed build, 45 s after launch so the first update check had run, board attached): 0 leaks, physical footprint 13.3 MB (peak 13.5 MB), 34 open file descriptors (AppKit's own). The update check uses an ephemeral URL session; with the shared session it wrote `~/Library/Caches/com.seeedjiggler*/Cache.db`, and after the change no such files exist.
 
-`app/SeeedJiggler.swift` has test-only hooks (`SJ_PORT`, `SJ_PAUSE_AFTER`, `SJ_TOGGLE_LOGIN`), compiled in with `-DTESTPORT`, that makes the app use the pseudo-terminal named in `SJ_PORT` instead of looking for USB hardware. `tests/fakeboard.py <seconds>` opens a pty pair, prints the slave name, answers `?` with a `SEEEDJIGGLER` status line, answers `M` with `OK`, and records every command with a timestamp:
+## Test builds and hooks
+
+`app/SeeedJiggler.swift` compiles test-only hooks in with `-DTESTPORT`; they are environment variables and are not in release builds:
+
+| Variable | Effect |
+|----------|--------|
+| `SJ_PORT` | use this pseudo-terminal instead of looking for the USB board |
+| `SJ_NO_GUARD=1` | skip the one-instance check (test programs run beside the real app) |
+| `SJ_IDLE=<s>` | idle threshold |
+| `SJ_PAUSE_AFTER=<s>`, `SJ_QUIT_AFTER=<s>` | toggle pause / quit after that many seconds |
+| `SJ_SET_AWAKE=forever\|hours` | turn keep-awake on at launch |
+| `SJ_TOGGLE_LOGIN=1` | run the *Start at login* toggle once and exit (use with `CFFIXED_USER_HOME=<temp home>`) |
+| `SJ_API`, `SJ_AUTO_INSTALL=1`, `SJ_RESTART=launchd` | point the updater at a fake GitHub, run check + install without asking, restart the launchd way |
+| `SJ_PRINT_MODE=1`, `SJ_PRINT_VERSION=1` | print state / version and exit |
+
+`tests/fakeboard.py <seconds>` opens a pty pair, prints the slave name, answers `?` with a `SEEEDJIGGLER` status line and `M` with `OK`, and records every command with a timestamp. `tests/fake_github.py` fakes the three GitHub endpoints the updater uses.
 
 ```bash
+python3 tests/fakeboard.py 60 &                 # prints /dev/ttysNNN
 swiftc -O -DTESTPORT -o /tmp/sjtest app/SeeedJiggler.swift -framework AppKit -framework IOKit
-SJ_PORT=/dev/ttysNNN /tmp/sjtest      # NNN printed by the emulator
+SJ_PORT=/dev/ttysNNN SJ_NO_GUARD=1 /tmp/sjtest
+tests/test-updater.sh                           # updater, restart and persistence cases (stop the real app first)
 ```
 
-Result (60 s, Mac already idle > 2 min): the board was verified with `?`, heartbeats arrived every 5.0 s (t = 7.3, 12.3, 17.3 …), jiggles (`M 8 0`, `M -8 0`, 0.1–0.2 s apart) at t = 1.3 s and t = 47.3 s, i.e. 46 s apart (45 s cadence plus the 5 s tick). A few extra heartbeats at start-up come from the hot-plug notifications triggering an immediate cycle.
-
-Other test hooks: `SJ_PAUSE_AFTER=<s>` toggles "Jiggle when idle" after that many seconds, `SJ_QUIT_AFTER=<s>` quits, `SJ_TOGGLE_LOGIN=1` runs the *Start at login* toggle once and exits (use with `CFFIXED_USER_HOME=<temp home>` so nothing real is touched).
-
-## Results (2026-11-18, Apple silicon, macOS)
+## Results (2026-11-18, Apple silicon, macOS 27)
 
 Against the emulated board:
 
-* **Pause** (`SJ_PAUSE_AFTER=20`, 52 s run): heartbeats continued every 5 s through and after the pause (t = 22.3 … 47.4); the jiggle that would have come at ~47 s did not (2 `M` lines in total, both at start).
-* **Start at login toggle** (fake home, executable under its `Documents`): the binary was copied to `~/.local/bin/SeeedJiggler` (byte-identical), the plist points at the copy, and toggling again removed the plist. (A first run failed to copy because `/tmp` and `/private/tmp` compared unequal; fixed with `realpath`.)
-* **One instance:** a second launch of `build/SeeedJiggler` beside the running login item showed "SeeedJiggler is already running" (screenshot) and did not start a second app. (Earlier, several instances were allowed and each locked its board; that was tested and then reverted at your request.)
-* **launchd `KeepAlive = {SuccessfulExit = false}`** (test job from `/private/tmp`): after the app quit normally (`NSApp.terminate`) it was not restarted (1 run); after `kill -9` it was restarted with a new pid within 9 s.
+* **Engine** (60 s, Mac already idle > 2 min): the board was verified with `?`, heartbeats arrived every 5.0 s, jiggles (`M 8 0`, `M -8 0`, 0.1–0.2 s apart) at t = 1.3 s and t = 47.3 s.
+* **Pause** (`SJ_PAUSE_AFTER=20`): heartbeats continued through and after the pause; the jiggle due at about 47 s did not happen.
+* **Pause and keep-awake survive a restart** (`SJ_PRINT_MODE`): paused/not paused, keep-awake "until I turn it off", and a timed choice with its end time are restored.
+* **Start at login toggle** (fake home, program under its `Documents`): copied byte-identically to `~/.local/bin/SeeedJiggler`, the plist points at the copy, toggling again removes the plist.
+* **launchd `KeepAlive = {SuccessfulExit = false}`:** after a normal quit the job was not restarted; after `kill -9` it was restarted with a new pid within 9 s.
+* **17-minute and 18-minute runs under launchd** (emulated board, with and without an `ProcessInfo` activity token against App Nap, the second while the Mac was in use for other things): 208 and 233 heartbeats, largest gap 6.0 s in both (the board's LED timeout is 30 s). The token was removed.
+* **Updater** (`tests/test-updater.sh`, local fake GitHub): update offered; program replaced; the new program started both by hand (spawned) and under launchd (`KeepAlive` restart); refused with the program untouched for a corrupted checksum, a program that cannot run, and a release that changed between check and download; the one-instance check (real guard) does not block the copy that is being replaced.
+* **Keep-awake (`pmset`):** both assertions appear while on and none after Off; in a 26-minute test (display sleep 20 min) no "Display is turned off" event occurred after the display was woken. The session was already locked at the start, so this shows display sleep is prevented, not that the lock is.
 
+On the real machine:
 
-Installed final build (version `5eb09eb-dirty`), 45 s after launch so the first update check had run, board attached: `leaks` reports 0 leaks, physical footprint 13.3 MB (peak 13.5 MB), 34 open file descriptors (AppKit's own). An earlier build wrote `~/Library/Caches/com.seeedjiggler*/Cache.db` and `HTTPStorages` from the update check (the shared URL session caches to disk); the updater now uses an ephemeral session and after the check no such files exist.
-
-* **17-minute run under launchd** (test build from `/private/tmp` via `launchctl submit`, emulated board, screen locked): 208 heartbeats, largest gap 6.0 s (the board's LED timeout is 30 s), 21 jiggles 50 s apart. This was done to look for App Nap throttling; the app held a `ProcessInfo` activity then; it was later removed (see below). It does not reproduce "user busy in another app".
-* **Keep-awake (`pmset`):** with the assertions held for 26 minutes (display sleep setting 20 min), no "Display is turned off" event occurred after the display was woken. The session was already locked when the test began, so this shows display sleep is prevented, not that the lock is.
-
-* **Updater** (`tests/test-updater.sh`, local fake GitHub): update offered, binary replaced, new program started both when run by hand (spawned) and under launchd (`KeepAlive` restart); refused with the binary untouched for a corrupted checksum, a program that cannot run, and a release that changed between check and download.
-
-* **No App Nap token:** the app used to hold a `ProcessInfo` activity against App Nap. A test build without it, run under launchd for 18 minutes while the Mac was in use for other things, still sent 233 heartbeats with a largest gap of 6.0 s, so the token was removed.
-* **Pause survives restart:** pausing, quitting and relaunching shows paused; unpausing, quitting and relaunching shows not paused (`SJ_PRINT_MODE`).
-* **Pause on the real board and re-enumeration:** see [how-it-works.md](how-it-works.md#verification-status).
-
-* **Launcher app:** `open ~/Applications/SeeedJiggler.app` with nothing running started the program (parent launchd, board `app=1`, one status item, mouse icon visible in the menu bar); Spotlight finds the app; with the program already running the second launch shows the "already running" dialog (clicked OK via accessibility, then it exited). A first version that `exec`ed into the program had no menu bar icon, and a first dialog made with the app's own alert stayed hidden when started from Finder, so the launcher spawns the program and the dialog is shown by `osascript`.
-* **Update through the real menu (by accessibility scripting):** "Check for updates…" showed the confirmation dialog with the right text; "Install and Restart" made launchd restart the app (exit 75), new pid, version `c7e02dc`, no `.old`/`.new` files, board `app=1`, menu bar icon normal.
-
-* **Reported by the user, not measured:** the board recovered after a physical unplug and replug with the app running, and the app launched from `~/Applications/SeeedJiggler.app`.
+* **Real GitHub:** the workflow built and published the release; the downloaded asset matched its checksum, ran, reported its commit and targets macOS 13. A test copy with an older version updated itself from the real release (offered, downloaded, verified, vetted, replaced; byte-identical to the asset).
+* **Update through the real menu** (accessibility scripting): "Check for updates…" showed the confirmation dialog with the right text; "Install and Restart" made launchd restart the app (exit 75), with a new pid and version, no `.old` or `.new` files left, board `app=1` and a normal menu bar icon.
+* **One instance:** a second launch of the program beside the running login item shows "SeeedJiggler is already running" and exits.
+* **Launcher app:** `open ~/Applications/SeeedJiggler.app` with nothing running started the program (parent launchd, board `app=1`, one status item, mouse icon in the menu bar); Spotlight finds it; with the program already running the second launch shows the dialog. The launcher starts the program as a separate process (running it in place left no menu bar icon) and the dialog is shown by `osascript` (an app-owned alert stayed hidden when started from Finder).
+* Pause, re-enumeration and the unplug/replug result are in [how-it-works.md](how-it-works.md#verification-status).
 
 ## Not covered
 
-* A multi-hour or multi-day memory watch of the app (the earlier C engine had a 15-minute watch with flat memory; that does not transfer to the Swift app).
-* A long run with the jiggle path active against the real board, and board re-enumeration with the app running.
+* A multi-hour or multi-day memory watch of the app.
+* A long run with the jiggle path active against the real board.
+* The update feedback lines ("Updating…", "✓ Updated to …"), the launcher's login-item start, and the hand-started update restart through the real menu are covered by the tests above only in part; see the open list in [app.md](app.md#not-verified).
