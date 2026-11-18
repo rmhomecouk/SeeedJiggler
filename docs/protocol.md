@@ -12,4 +12,4 @@ The firmware exposes a USB CDC serial port (115200 baud) alongside the HID mouse
 
 Anything else, including `T`, `K`, `S`, `C`, `D`, `U` from earlier firmware, answers `ERR`.
 
-From the host use `host/hid.py` (`hid.py status` prints the `?` line) or the app (`menubar/SeeedJiggler.swift`), which speaks the same protocol. Both open the port in **raw mode** at 115200 baud — never 1200, which resets the board into its bootloader.
+From the host use `tools/hid.py` (`hid.py status` prints the `?` line) or the app (`app/SeeedJiggler.swift`), which speaks the same protocol. Both open the port in **raw mode** at 115200 baud — never 1200, which resets the board into its bootloader.

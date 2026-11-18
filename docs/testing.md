@@ -23,10 +23,10 @@ lsof -p $(pgrep -x SeeedJiggler) | wc -l          # open file descriptors should
 
 ## Emulated-board test
 
-`menubar/SeeedJiggler.swift` has test-only hooks (`SJ_PORT`, `SJ_PAUSE_AFTER`, `SJ_TOGGLE_LOGIN`), compiled in with `-DTESTPORT`, that makes the app use the pseudo-terminal named in `SJ_PORT` instead of looking for USB hardware. `tests/fakeboard.py <seconds>` opens a pty pair, prints the slave name, answers `?` with a `SEEEDJIGGLER` status line, answers `M` with `OK`, and records every command with a timestamp:
+`app/SeeedJiggler.swift` has test-only hooks (`SJ_PORT`, `SJ_PAUSE_AFTER`, `SJ_TOGGLE_LOGIN`), compiled in with `-DTESTPORT`, that makes the app use the pseudo-terminal named in `SJ_PORT` instead of looking for USB hardware. `tests/fakeboard.py <seconds>` opens a pty pair, prints the slave name, answers `?` with a `SEEEDJIGGLER` status line, answers `M` with `OK`, and records every command with a timestamp:
 
 ```bash
-swiftc -O -DTESTPORT -o /tmp/sjtest menubar/SeeedJiggler.swift -framework AppKit -framework IOKit
+swiftc -O -DTESTPORT -o /tmp/sjtest app/SeeedJiggler.swift -framework AppKit -framework IOKit
 SJ_PORT=/dev/ttysNNN /tmp/sjtest      # NNN printed by the emulator
 ```
 
@@ -40,7 +40,7 @@ Against the emulated board:
 
 * **Pause** (`SJ_PAUSE_AFTER=20`, 52 s run): heartbeats continued every 5 s through and after the pause (t = 22.3 … 47.4); the jiggle that would have come at ~47 s did not (2 `M` lines in total, both at start).
 * **Start at login toggle** (fake home, executable under its `Documents`): the binary was copied to `~/.local/bin/SeeedJiggler` (byte-identical), the plist points at the copy, and toggling again removed the plist. (A first run failed to copy because `/tmp` and `/private/tmp` compared unequal; fixed with `realpath`.)
-* **Single instance:** a second copy started by hand exited at once.
+* **Several instances** (`SJ_PRINT_STATE_AFTER`): with one emulated board, the first instance drove it and the second reported "in use" (the board saw one instance's heartbeats only); with two emulated boards each instance claimed a different one and each board got its own heartbeats. On the real board, a second instance reported "in use" while the installed app held it, and `hid.py status` still worked (the lock is advisory).
 * **launchd `KeepAlive = {SuccessfulExit = false}`** (test job from `/private/tmp`): after the app quit normally (`NSApp.terminate`) it was not restarted (1 run); after `kill -9` it was restarted with a new pid within 9 s.
 
 
@@ -50,6 +50,10 @@ Installed app, about 1.5 minutes after launch, no board attached: `leaks` report
 * **Keep-awake (`pmset`):** with the assertions held for 26 minutes (display sleep setting 20 min), no "Display is turned off" event occurred after the display was woken. The session was already locked when the test began, so this shows display sleep is prevented, not that the lock is.
 
 * **Updater** (`tests/test-updater.sh`, local fake GitHub): update offered, binary replaced, process re-executed as the new version, corrupted checksum refused with the binary untouched.
+
+* **No App Nap token:** the app used to hold a `ProcessInfo` activity against App Nap. A test build without it, run under launchd for 18 minutes while the Mac was in use for other things, still sent 233 heartbeats with a largest gap of 6.0 s, so the token was removed.
+* **Pause survives restart:** pausing, quitting and relaunching shows paused; unpausing, quitting and relaunching shows not paused (`SJ_PRINT_MODE`).
+* **Pause on the real board, re-enumeration, second instance:** see [how-it-works.md](how-it-works.md#verification-status).
 
 ## Not covered
 

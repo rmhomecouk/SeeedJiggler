@@ -18,7 +18,8 @@ import IOKit.serial
 import CryptoKit
 
 let boardVID = 0x2886, boardPID = 0x802F
-let agentLabel = "com.seeedjiggler.menu"
+let agentLabel = "com.seeedjiggler"
+let legacyAgentLabel = "com.seeedjiggler.menu"  // earlier name of the login item
 let repoSlug = "rmhomecouk/SeeedJiggler"
 let repoURL = URL(string: "https://github.com/\(repoSlug)")!
 let releaseAsset = "SeeedJiggler-macos-arm64"
@@ -37,7 +38,7 @@ func parentNum(_ s: io_object_t, _ key: String) -> Int? {
 /// Callout device paths (/dev/cu.*) of every serial device with the board's USB IDs. Looks only; opens nothing.
 func boardPaths() -> [String] {
 #if TESTPORT  // test build only (-DTESTPORT): use a pseudo-terminal that emulates the board
-    if let p = ProcessInfo.processInfo.environment["SJ_PORT"] { return [p] }
+    if let p = ProcessInfo.processInfo.environment["SJ_PORT"] { return p.split(separator: ":").map(String.init) }
 #endif
     var it: io_iterator_t = 0
     guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(kIOSerialBSDServiceValue), &it) == KERN_SUCCESS
@@ -73,9 +74,10 @@ final class Engine {
     private var paused = false
     private var idleThreshold: Double
     private var lastReal = mono(), lastJiggle = -1.0
-    var onUpdate: ((Bool, Int) -> Void)?
+    var onUpdate: ((Bool, Int, Bool) -> Void)?  // (board ready, mode, board in use by another instance)
+    private var busy = false
 
-    init(idle: Double) { idleThreshold = idle }
+    init(idle: Double, paused: Bool) { idleThreshold = idle; self.paused = paused }
 
     func start() {
         let t = DispatchSource.makeTimerSource(queue: q)
@@ -114,7 +116,8 @@ final class Engine {
             }
         }
         let ready = fd >= 0, mode = paused ? 2 : (lastJiggle >= 0 ? 1 : 0)
-        DispatchQueue.main.async { self.onUpdate?(ready, mode) }
+        let inUse = busy && !ready
+        DispatchQueue.main.async { self.onUpdate?(ready, mode, inUse) }
     }
 
     // MARK: Serial
@@ -142,9 +145,13 @@ final class Engine {
     /// Open (if needed) and verify a board. Cheap when already open.
     private func ensurePort() -> Bool {
         if fd >= 0 { return true }
+        busy = false
         for path in boardPaths() {  // a second XIAO may exist; the first that answers as SeeedJiggler wins
             let f = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC)  // not inherited across the update re-exec
             if f < 0 { continue }
+            // Several instances may run (e.g. one per board): each claims the boards it can lock. The lock is advisory
+            // and held while the port is open, so a second instance leaves a claimed board alone.
+            if flock(f, LOCK_EX | LOCK_NB) != 0 { busy = true; close(f); continue }
             var t = termios()
             if tcgetattr(f, &t) != 0 { close(f); continue }
             cfmakeraw(&t)
@@ -381,29 +388,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let updater = Updater()
     var autoCheck = UserDefaults.standard.object(forKey: "autoUpdateCheck") as? Bool ?? true
     var notePort: IONotificationPortRef?
-    var activity: NSObjectProtocol?
     var idleChoice: Double
 
     var present = false      // a device with the board's USB IDs exists
     var ready = false        // ...and it answered as SeeedJiggler
+    var inUse = false        // ...but another SeeedJiggler instance has it
     var mode = 0             // 0 watching, 1 jiggling, 2 paused
 
     override init() {
         let stored = UserDefaults.standard.double(forKey: "idleSecs")
         idleChoice = stored > 0 ? stored : defaultIdle
-        engine = Engine(idle: idleChoice)
+#if TESTPORT
+        if let t = ProcessInfo.processInfo.environment["SJ_IDLE"], let v = Double(t), v > 0 { idleChoice = v }
+#endif
+        let wasPaused = UserDefaults.standard.bool(forKey: "paused")  // pause survives quit, login and updates
+        engine = Engine(idle: idleChoice, paused: wasPaused)
         super.init()
+        mode = wasPaused ? 2 : 0
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         if let exe = Bundle.main.executablePath { unlink(realPath(exe) + ".old") }  // left by a successful update
-#if !TESTPORT
-        if otherInstanceRunning() { exit(0) }  // two copies would both drive the board
-#endif
-        // A window-less accessory app is a candidate for App Nap, which can delay timers (heartbeat and jiggle timing).
-        // Hold an activity for the whole lifetime (the system may still idle-sleep). Whether it is needed was not measured.
-        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .suddenTerminationDisabled],
-                                                         reason: "SeeedJiggler heartbeat")
+        migrateLoginItem()
 #if TESTPORT
         if ProcessInfo.processInfo.environment["SJ_TOGGLE_LOGIN"] == "1" { toggleLogin(); exit(0) }
         if let n = ProcessInfo.processInfo.environment["SJ_PAUSE_AFTER"], let secs = Double(n) {
@@ -417,9 +423,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = NSMenu()
         item.menu?.delegate = self
         awake.onChange = { [weak self] in self?.refresh() }
-        engine.onUpdate = { [weak self] r, m in  // only on change: the 5 s tick must not redraw anything
-            guard let self = self, r != self.ready || m != self.mode else { return }
-            self.ready = r; self.mode = m; self.refresh()
+        engine.onUpdate = { [weak self] r, m, u in  // only on change: the 5 s tick must not redraw anything
+            guard let self = self, r != self.ready || m != self.mode || u != self.inUse else { return }
+            self.ready = r; self.mode = m; self.inUse = u; self.refresh()
         }
         startHotplugWatch()
         engine.start()
@@ -429,6 +435,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         RunLoop.main.add(t, forMode: .common)
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.autoCheckNow() }
 #if TESTPORT
+        if let n = ProcessInfo.processInfo.environment["SJ_PRINT_STATE_AFTER"], let secs = Double(n) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + secs) { [weak self] in
+                guard let self = self else { return }
+                print("state ready=\(self.ready) inUse=\(self.inUse) mode=\(self.mode)"); fflush(stdout); exit(0)
+            }
+        }
+        if ProcessInfo.processInfo.environment["SJ_PRINT_MODE"] == "1" { print("mode", mode, "paused-pref", UserDefaults.standard.bool(forKey: "paused")); fflush(stdout); exit(0) }
         if ProcessInfo.processInfo.environment["SJ_PRINT_VERSION"] == "1" { print(Updater.version()); fflush(stdout); exit(0) }
         if ProcessInfo.processInfo.environment["SJ_AUTO_INSTALL"] == "1" {
             updater.check { [weak self] st in
@@ -469,22 +482,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// True if another SeeedJiggler of this user is already running.
-    func otherInstanceRunning() -> Bool {
-        var pids = [pid_t](repeating: 0, count: 4096)
-        let bytes = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
-        guard bytes > 0 else { return false }
-        var name = [CChar](repeating: 0, count: 64)
-        for p in pids.prefix(Int(bytes) / MemoryLayout<pid_t>.size) where p > 0 && p != getpid() {
-            if proc_name(p, &name, UInt32(name.count)) > 0 && String(cString: name) == "SeeedJiggler" {
-                var info = proc_bsdshortinfo()
-                if proc_pidinfo(p, PROC_PIDT_SHORTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdshortinfo>.size)) > 0,
-                   info.pbsi_uid == getuid() { return true }
-            }
-        }
-        return false
-    }
-
     func refresh() {
         present = !boardPaths().isEmpty
         if !present { ready = false }
@@ -502,7 +499,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func statusLine() -> String {
         if !present { return "Board not found" }
-        if !ready { return "Board not responding" }
+        if !ready { return inUse ? "Board is used by another SeeedJiggler" : "Board not responding" }
         switch mode {
         case 2: return "Paused"
         case 1: return "Jiggling (Mac idle)"
@@ -526,7 +523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         head.attributedTitle = NSAttributedString(string: "SeeedJiggler", attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
         menu.addItem(head)
         let ok = present && ready
-        let dot = NSMenuItem(title: ok ? "● Board connected" : (present ? "● Board not responding" : "● Board not found"), action: nil, keyEquivalent: "")
+        let dot = NSMenuItem(title: ok ? "● Board connected" : (present ? (inUse ? "● Board in use elsewhere" : "● Board not responding") : "● Board not found"), action: nil, keyEquivalent: "")
         dot.attributedTitle = NSAttributedString(string: dot.title, attributes: [
             .foregroundColor: ok ? NSColor.systemGreen : NSColor.systemOrange])
         menu.addItem(dot)
@@ -588,7 +585,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.setIdle(idleChoice)
     }
 
-    @objc func toggleJiggle() { mode = mode == 2 ? 0 : 2; engine.setPaused(mode == 2); refresh() }
+    @objc func toggleJiggle() {
+        mode = mode == 2 ? 0 : 2
+        UserDefaults.standard.set(mode == 2, forKey: "paused")
+        engine.setPaused(mode == 2); refresh()
+    }
 
     @objc func showAbout() {
         let info = Bundle.main.infoDictionary
@@ -664,6 +665,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? FileManager.default.removeItem(atPath: dest)
         do { try FileManager.default.copyItem(atPath: exe, toPath: dest) } catch { return nil }
         return dest
+    }
+
+    /// A login item under the earlier label is replaced by one under the current label (same program, same settings).
+    func migrateLoginItem() {
+        let legacy = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/LaunchAgents/\(legacyAgentLabel).plist")
+        guard FileManager.default.fileExists(atPath: legacy.path) else { return }
+        if !loginEnabled() { toggleLogin() }
+        try? FileManager.default.removeItem(at: legacy)  // the running job keeps running; it is not loaded again at next login
     }
 
     @objc func toggleLogin() {

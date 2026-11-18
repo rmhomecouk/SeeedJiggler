@@ -11,7 +11,7 @@ build() {  # build NAME VERSION
 <?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
 <key>CFBundleShortVersionString</key><string>$2</string><key>CFBundleVersion</key><string>test</string></dict></plist>
 PL
-  swiftc -O -DTESTPORT -o "$T/$1" "$REPO/menubar/SeeedJiggler.swift" -framework AppKit -framework IOKit \
+  swiftc -O -DTESTPORT -o "$T/$1" "$REPO/app/SeeedJiggler.swift" -framework AppKit -framework IOKit \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$T/$1.plist"
 }
 build old aaaaaaa

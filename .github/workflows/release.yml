@@ -5,7 +5,7 @@ name: release
 on:
   push:
     branches: [main]
-    paths: ['menubar/**', 'scripts/build.sh', '.github/workflows/release.yml']
+    paths: ['app/**', 'scripts/build.sh', '.github/workflows/release.yml']
   workflow_dispatch:
 
 permissions:

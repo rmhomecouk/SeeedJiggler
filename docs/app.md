@@ -1,6 +1,6 @@
 # The app
 
-`menubar/SeeedJiggler.swift` is the whole host side in one file: the idle-aware jiggle engine, board detection, the menu bar UI, keep-awake and start-at-login. It replaced a separate native C service plus a menu bar front end.
+`app/SeeedJiggler.swift` is the whole host side in one file: the idle-aware jiggle engine, board detection, the menu bar UI, keep-awake and start-at-login. It replaced a separate native C service plus a menu bar front end.
 
 ## Install
 
@@ -12,9 +12,13 @@ scripts/build.sh       # build only; run build/SeeedJiggler by hand
 
 Needs the Xcode command line tools. No logs are written. When the repo is under `~/Documents`, `~/Desktop` or `~/Downloads`, the installer and the *Start at login* menu item run a **copy** of the binary from `~/.local/bin` (`BIN_DIR=... scripts/install.sh` to choose elsewhere), because a LaunchAgent started from those folders hung here before `main` (see [how-it-works.md](how-it-works.md)). Re-run `scripts/install.sh` after rebuilding to refresh the copy.
 
+## More than one instance
+
+You can start as many copies as you like (for example one per board). Each copy takes an advisory lock (`flock`) on the board's serial port while it holds it open, and claims the first board it can lock; a copy that finds every board already claimed shows an orange icon and "Board is used by another SeeedJiggler" until the board frees up. So two copies never drive the same board, and two boards get one copy each. Each copy has its own menu bar icon and its own settings while running; pause and idle threshold are saved in the app's shared preferences and only read at launch, so changing them in one copy does not change another copy that is already running. Only one login item exists. `tools/hid.py` is not blocked by the lock.
+
 ## Auto-start
 
-*Start at login* in the menu adds or removes `~/Library/LaunchAgents/com.seeedjiggler.menu.plist` (`RunAtLoad`, `KeepAlive` only after a crash so Quit stays quit, output to `/dev/null`). Turning it off removes the plist for the next login; it does not quit the running app. `scripts/install.sh` does the same thing and also starts the app immediately.
+*Start at login* in the menu adds or removes `~/Library/LaunchAgents/com.seeedjiggler.plist` (`RunAtLoad`, `KeepAlive` only after a crash so Quit stays quit, output to `/dev/null`). Turning it off removes the plist for the next login; it does not quit the running app. `scripts/install.sh` does the same thing and also starts the app immediately.
 
 ## Quit means no jiggling
 
@@ -30,7 +34,7 @@ Every push to `main` that touches the app triggers `.github/workflows/release.ym
 
 What this does **not** do: update the board's firmware (reflash with `arduino-cli upload`; the app does not check it), or protect you from a compromised GitHub account: the checksum comes from the same release, so it only catches corrupted downloads. Intel Macs are not supported (the release is arm64 only). A build with uncommitted changes (`-dirty`) gets a warning in the confirmation text; a build from an unpushed or diverged commit is offered the release without one. The *version* shown by About is the commit the binary was built from, so builds not made by `scripts/build.sh` show as unknown and are always offered the latest release.
 
-Tested without GitHub: `tests/test-updater.sh` runs the whole check, download, verify, replace and re-exec path against a local fake of the API (including a corrupted checksum being refused). Not yet tested: the real workflow and release (it has to run on GitHub first), and the confirmation dialogs on screen.
+Tested: `tests/test-updater.sh` runs the whole check, download, verify, replace and re-exec path against a local fake of the API (including a corrupted checksum and a non-running program being refused). On GitHub the workflow built and published the release (the first run was cancelled because no macOS runner was ever assigned; a re-run succeeded), the downloaded asset matched its checksum, ran, reported its commit and targets macOS 13. A test copy with an older version then updated itself from the real release (offered, downloaded, verified, vetted, replaced; the result is byte-identical to the asset). Not tested: the confirmation dialogs on screen, and an update of the installed app (it needs a release newer than the installed build).
 
 ## Icon states
 
@@ -64,7 +68,7 @@ No polling for the board's presence: IOKit hot-plug notifications. One timer, ev
 Real-board checks that passed are listed in [how-it-works.md](how-it-works.md#verification-status). Still unverified:
 
 * The About box was seen in a screenshot (version, build date, address, both buttons; that capture predates the mouse icon, which replaced a generic folder icon). The update dialogs have not been seen.
-* Pause from the menu on the real board (emulator only), unplug/replug with the app running, and the Jiggling, paused and "not responding" icons beyond the one seen (jiggling, on a dark wallpaper). Light-wallpaper colour and the look of the menu itself were not seen.
+* The Jiggling, paused, "not responding" and "in use" icons beyond the one seen (jiggling, on a dark wallpaper), light-wallpaper colour, and the look of the menu itself.
 * Keep-awake: `pmset -g assertions` shows both assertions while on and none after Off, and in a 26-minute test the display did not sleep (20-minute setting). The Mac was already locked when that test began, so preventing the *lock* is not established.
 * Start at login: `scripts/install.sh` and the menu item's code path (via a test hook in a fake home) were tested; the menu item itself was not clicked.
 * Nothing jiggles between a reboot and login, and a hung app leaves nothing jiggling (the board no longer covers for it).

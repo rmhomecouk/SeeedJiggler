@@ -1,5 +1,7 @@
 # SeeedJiggler
 
+[![release](https://github.com/rmhomecouk/SeeedJiggler/actions/workflows/release.yml/badge.svg)](https://github.com/rmhomecouk/SeeedJiggler/actions/workflows/release.yml)
+
 A tiny hardware mouse jiggler built from a **Seeeduino XIAO (SAMD21)**, plus a macOS **menu bar app** that only jiggles when you are actually idle, shows whether the board is connected, and can keep the Mac awake. The app is one Swift file: no logging, nothing written to disk while it runs, nothing to install on the target besides the app.
 
 The XIAO shows up to the computer as a genuine USB mouse, so the activity is real HID input — it keeps chat/presence status "Available" and stops screen lock/sleep timers, with nothing to install on the target machine except the optional app.
@@ -42,7 +44,7 @@ arduino-cli upload  -p /dev/cu.usbmodem* --fqbn Seeeduino:samd:seeed_XIAO_m0 fir
 # 3. build the app and run it once (menu bar icon appears)
 scripts/build.sh && build/SeeedJiggler
 
-# 4. ...or, instead of 3, install it to start at every login (builds it, replaces any running copy)
+# 4. ...or install it to start at every login (builds it; replaces the login copy)
 scripts/install.sh
 ```
 
@@ -53,8 +55,8 @@ The idle threshold (default 2 minutes) is chosen in the app's menu; jiggles repe
 | Path | What it is |
 |------|------------|
 | `firmware/SeeedJiggler/SeeedJiggler.ino` | XIAO firmware: USB HID mouse only, serial command parser, app-presence LED |
-| `menubar/SeeedJiggler.swift` | The macOS app: idle-aware jiggle engine, board detection, menu bar UI, keep-awake, start-at-login |
-| `host/hid.py` | Optional Python CLI to send keystrokes / mouse actions to the board |
+| `app/SeeedJiggler.swift` | The macOS app: idle-aware jiggle engine, board detection, menu bar UI, keep-awake, start-at-login |
+| `tools/hid.py` | Optional Python CLI: check the board status, move the mouse |
 | `.github/workflows/release.yml` | Builds the app on every push to `main` and publishes it as the rolling `latest` release that the app's update checker reads |
 | `scripts/build.sh`, `scripts/install.sh`, `scripts/uninstall.sh` | Compile the app; install/remove the login LaunchAgent |
 | `docs/` | Hardware & flashing, the app, serial protocol, design notes, memory/leak testing, troubleshooting |
@@ -62,8 +64,8 @@ The idle threshold (default 2 minutes) is chosen in the app's menu; jiggles repe
 ## Checking the board
 
 ```bash
-python3 -B -I host/hid.py status          # SEEEDJIGGLER 2 app=1 age=1234 hb=57 mv=12
-python3 -B -I host/hid.py move 100 0      # relative mouse move
+python3 -B -I tools/hid.py status          # SEEEDJIGGLER 2 app=1 age=1234 hb=57 mv=12
+python3 -B -I tools/hid.py move 100 0      # relative mouse move
 ```
 
 `status` shows what the board actually received: `app=0` means it has heard no heartbeat for 30 s, `hb` counts heartbeats and `mv` counts mouse-move commands.

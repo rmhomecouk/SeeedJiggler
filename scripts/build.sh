@@ -11,7 +11,7 @@ cat > "$REPO/build/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>com.seeedjiggler.menu</string>
+  <key>CFBundleIdentifier</key><string>com.seeedjiggler</string>
   <key>CFBundleName</key><string>SeeedJiggler</string>
   <key>CFBundleShortVersionString</key><string>$VER</string>
   <key>CFBundleVersion</key><string>$(date +%Y-%m-%d)</string>
@@ -19,6 +19,6 @@ cat > "$REPO/build/Info.plist" <<PL
 PL
 # explicit target: otherwise the minimum macOS version is the build machine's, and a release built on a new runner
 # could refuse to start on an older Mac
-swiftc -O -target arm64-apple-macos13.0 -o "$REPO/build/SeeedJiggler" "$REPO/menubar/SeeedJiggler.swift" -framework AppKit -framework IOKit \
+swiftc -O -target arm64-apple-macos13.0 -o "$REPO/build/SeeedJiggler" "$REPO/app/SeeedJiggler.swift" -framework AppKit -framework IOKit \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$REPO/build/Info.plist"
 echo "Built $REPO/build/SeeedJiggler"

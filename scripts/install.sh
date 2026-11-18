@@ -4,7 +4,7 @@
 #   BIN_DIR=$HOME/.local/bin scripts/install.sh     # choose where the run-from copy goes
 set -euo pipefail
 
-LABEL="com.seeedjiggler.menu"
+LABEL="com.seeedjiggler"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$REPO/build/SeeedJiggler"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -15,8 +15,10 @@ DEST="${BIN_DIR:-}"
 case "$REPO" in "$HOME"/Documents/*|"$HOME"/Desktop/*|"$HOME"/Downloads/*) DEST="${DEST:-$HOME/.local/bin}" ;; esac
 
 "$REPO/scripts/build.sh"
+# migrate from the earlier label (com.seeedjiggler.menu): stop and remove it
+launchctl bootout "$DOMAIN/com.seeedjiggler.menu" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.seeedjiggler.menu.plist"
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-pkill -x SeeedJiggler 2>/dev/null || true   # a copy started by hand would make the new one exit (single-instance guard)
 for _ in $(seq 1 50); do
   launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break
   sleep 0.2

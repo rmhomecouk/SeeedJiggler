@@ -6,7 +6,7 @@ Software jigglers synthesise events inside the OS. A board plugged into USB gene
 
 ## Idle detection (host)
 
-The board cannot see the computer's input, so the app (`menubar/SeeedJiggler.swift`) reads macOS's `HIDIdleTime` (nanoseconds since last input) every 5 s, directly from the `IOHIDSystem` service via IOKit — no subprocess, no files.
+The board cannot see the computer's input, so the app (`app/SeeedJiggler.swift`) reads macOS's `HIDIdleTime` (nanoseconds since last input) every 5 s, directly from the `IOHIDSystem` service via IOKit — no subprocess, no files.
 
 **Problem:** the jiggle itself is HID input, so it resets `HIDIdleTime` and the app would think you came back. **Solution:** the app keeps `lastReal`, the time of the last *genuine* input, and the time of its own last jiggle. If `HIDIdleTime` is smaller than "time since my last jiggle" (minus 2 s slack), input arrived *after* the jiggle, so it must be you — `last_real` is updated and jiggling stops. Otherwise the idle clock keeps counting from `last_real`.
 
@@ -46,6 +46,9 @@ Checked on real hardware (Seeeduino XIAO M0, macOS 27) with the current firmware
 | Heartbeats reach the board | `hb` 7 → 17 in about 50 s (one per 5 s) |
 | Jiggles reach the board | `mv` 2 → 4 about 45 s apart (each jiggle is two `M` commands) |
 | Real input holds jiggling off | with the Mac in active use right after launch, `mv` stayed 0 for 12 s (short observation) |
+| Pause on the real board | paused at t = 20 s with the jiggle threshold at 1 s: `hb` kept rising (348 → 367 over 90 s), `mv` stayed at 4 while two jiggles would have fallen due |
+| Board re-enumeration with the app running | reflashed the firmware with the app running: the port vanished and returned, the **same app process** reconnected within 3 s (`hb` restarted at 2, `app=1`). This is a reflash, not a pulled cable |
+| Second instance on the real board | while the installed app held the board, a second copy reported "in use" and did not touch it; `hid.py status` still worked |
 | Live menu bar item | seen in a screenshot of the real menu bar on a dark wallpaper: legible white glyph |
 | Memory | `leaks` 0, about 12 MB physical footprint ([testing.md](testing.md)) |
 
@@ -53,9 +56,9 @@ Observed earlier with the previous C engine and old firmware, not repeated with 
 
 Not verified with the current code:
 
-* **Pause** from the menu on the real board (verified on the emulator only), and **unplug/replug** with the app running (replug was only seen once, at first plug-in).
+* **Physically pulling the USB cable** with the app running (re-enumeration by reflashing was verified), and clicking Pause in the menu itself (the same code path was driven by a test hook).
 * **The no-heartbeat LED blink**, and the other LED behaviours of the new firmware, by eye.
-* **A second XIAO plugged in at the same time**: the app tries every device with the board's USB IDs and uses the first that answers as SeeedJiggler, but this was not tested with two boards.
+* **A second physical XIAO**: two instances claiming two emulated boards was tested, but not two real boards.
 * **A sleeping Mac**: the firmware never requests USB remote wake-up, so it should not wake a sleeping host; not tested.
 * **Keep-awake preventing the lock**: see [app.md](app.md).
 * **Start-up stall:** a LaunchAgent whose binary is under `~/Documents` hung inside `open()` of its own executable before `main` (stack: `dyld … open`, ~144 KB footprint). The same binary run from `/private/tmp` under launchd started in under 4 s. The suspect is macOS file-access protection for background processes; no consent dialog or `tccd` entry was seen, so that is an inference. The installer and the *Start at login* item therefore run a copy from `~/.local/bin` when the repo is under Documents, Desktop or Downloads.

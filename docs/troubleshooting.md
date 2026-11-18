@@ -1,6 +1,6 @@
 # Troubleshooting
 
-**Board not found / `SeeedJiggler board not found`** — Check `ioreg -p IOUSB -l -w0 | grep "USB Product"`: a working board is "Seeed XIAO M0" (vendor `0x2886`, product `0x802F`). "Seeeduino XIAO" means it is sitting in the bootloader — reflash it or power-cycle. The host tools only talk to a port that answers `?` with `SEEEDJIGGLER`, so a board still running other firmware is (correctly) ignored. Try another cable (many are charge-only). `python3 -B -I host/hid.py status` tests the whole path.
+**Board not found / `SeeedJiggler board not found`** — Check `ioreg -p IOUSB -l -w0 | grep "USB Product"`: a working board is "Seeed XIAO M0" (vendor `0x2886`, product `0x802F`). "Seeeduino XIAO" means it is sitting in the bootloader — reflash it or power-cycle. The host tools only talk to a port that answers `?` with `SEEEDJIGGLER`, so a board still running other firmware is (correctly) ignored. Try another cable (many are charge-only). `python3 -B -I tools/hid.py status` tests the whole path.
 
 **Yellow LED blinking** — The board is connected but hearing no heartbeats: the app is not running. The board does nothing on its own in that state. Start the app (or `scripts/install.sh`); `hid.py status` shows `app=0` until a heartbeat arrives. (A board still on the old firmware also jiggles by itself here; reflash it.)
 
