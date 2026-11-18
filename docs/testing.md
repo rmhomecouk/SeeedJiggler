@@ -57,6 +57,8 @@ Stress runs of the current code, 100 s each, run concurrently:
 
 (The first sample of each run is higher, ~3.5 MB, because start-up pages are later compressed.)
 
-Live service: `leaks` on the installed service reports 0 leaks. An earlier ~9-minute watch of the installed service (previous build) held at 2672 → 2656 KB with 7 fds; it was cut short when the service was stopped for firmware work, so it is **not** a 15-minute result and is not for the current build.
+Installed service, current build, 15-minute watch (31 samples, one every 30 s, one process for the whole run, never restarted): RSS 3568 KB at start, 2512 KB after the first two minutes, then 2448–2464 KB for the rest; **8 open fds in every sample**. `leaks` on the live service reports 0 leaks, and afterwards the board still reported `fb=0` with a fresh heartbeat. Other testing (the three stress processes above, doc edits) ran on the same machine during the watch.
+
+An earlier ~9-minute watch of the previous build held at 2672 → 2656 KB with 7 fds; it was cut short when the service was stopped for firmware work, so it is not counted here.
 
 Not covered: a multi-day soak, and the jiggle-send path under stress (not forced, to avoid moving the cursor).
