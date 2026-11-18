@@ -6,59 +6,56 @@ Software jigglers synthesise events inside the OS. A board plugged into USB gene
 
 ## Idle detection (host)
 
-The board cannot see the computer's input, so `host/seeedjiggler.c` reads macOS's `HIDIdleTime` (nanoseconds since last input) every 5 s, directly from the `IOHIDSystem` service via IOKit — no subprocess, no files.
+The board cannot see the computer's input, so the app (`menubar/SeeedJiggler.swift`) reads macOS's `HIDIdleTime` (nanoseconds since last input) every 5 s, directly from the `IOHIDSystem` service via IOKit — no subprocess, no files.
 
-**Problem:** the jiggle itself is HID input, so it resets `HIDIdleTime` and the service would think you came back. **Solution:** the service keeps `last_real`, the time of the last *genuine* input, and the time of its own last jiggle. If `HIDIdleTime` is smaller than "time since my last jiggle" (minus 2 s slack), input arrived *after* the jiggle, so it must be you — `last_real` is updated and jiggling stops. Otherwise the idle clock keeps counting from `last_real`.
+**Problem:** the jiggle itself is HID input, so it resets `HIDIdleTime` and the app would think you came back. **Solution:** the app keeps `lastReal`, the time of the last *genuine* input, and the time of its own last jiggle. If `HIDIdleTime` is smaller than "time since my last jiggle" (minus 2 s slack), input arrived *after* the jiggle, so it must be you — `last_real` is updated and jiggling stops. Otherwise the idle clock keeps counting from `last_real`.
 
-Defaults: idle threshold 120 s (`IDLE_SECS`), jiggle every 45 s (`JIGGLE_EVERY`). A jiggle is `M 8 0` then `M -8 0`.
+Defaults: idle threshold 120 s (menu: 1/2/5/10/15 min), jiggle every 45 s. A jiggle is `M 8 0` then `M -8 0`.
 
-Every 5 s the service also sends `H` (heartbeat).
+Every 5 s the app also sends `H` (heartbeat).
 
-**Finding the board.** The service never writes to "the first `/dev/cu.usbmodem*`". It scans IOKit for the serial device whose USB parent has Seeed's vendor ID `0x2886` and the firmware's product ID `0x802F`, opens it in raw mode at 115200 baud, and sends `?`. Only if the reply starts with `SEEEDJIGGLER` is the port used. Other USB serial devices (printer boards, other Arduinos) are never written to. The port is then **held open** between cycles; if a write fails (unplug) the port is closed and the whole find/verify step runs again on the next cycle. The service never logs and never writes to disk (run it in the foreground with `-v` to see jiggle events on stderr).
+**Finding the board.** The app never writes to "the first `/dev/cu.usbmodem*`". It scans IOKit for the serial device whose USB parent has Seeed's vendor ID `0x2886` and the firmware's product ID `0x802F`, opens it in raw mode at 115200 baud, and sends `?`. Only if the reply starts with `SEEEDJIGGLER` is the port used. Other USB serial devices (printer boards, other Arduinos) are never written to. The port is then **held open** between cycles; if a write fails (unplug) the port is closed and the whole find/verify step runs again on the next cycle. The app never logs and never writes to disk while running (it stores only the idle-threshold choice, and the start-at-login plist if you enable that).
 
-**Footprint:** ~3.5 MB resident (measured), one wake-up every 5 s, no child processes.
+**Footprint:** about 12 MB physical footprint (AppKit), one wake-up every 5 s, no child processes. The earlier C service was ~3.5 MB; the engine was moved into the app so there is one thing to install and control.
 
-## Watchdog fallback (firmware)
+## App presence (firmware)
 
-The firmware records the time of the last received command (the `?` status query is deliberately excluded, so checking status can never mask a dead service). If connected over USB but more than **30 s** pass without a command, it enters fallback: it blinks the yellow LED and jiggles by itself (8 px out and back) every **45 s**. As soon as the host sends anything again, fallback ends and the host service is in charge.
-
-Trade-off: in fallback the board has no idea whether you are active, so it may twitch the cursor while you work. This is intentional — better a harmless twitch than losing "Available" status because a script crashed.
-
-A sleeping host: the firmware never calls the SAMD21's remote-wakeup, so jiggles sent while the bus is suspended should not wake the machine (not empirically tested).
+The firmware records the time of the last received command (the `?` status query is deliberately excluded, so checking status can never mask a dead app). If connected over USB but more than **30 s** pass without a command, the yellow LED blinks and `?` reports `app=0`. **That is all it does: the board never moves the mouse by itself.** The app has full control, so quitting or crashing the app stops all jiggling. (Earlier firmware jiggled on its own when the heartbeat stopped; that was removed on request.)
 
 ## LEDs (active-low on the XIAO)
 
 | LED | Meaning |
 |-----|---------|
-| Yellow (user), solid | USB configured, service heartbeat OK |
-| Yellow, blinking 1 Hz | USB configured, **no heartbeat** → fallback jiggling |
+| Yellow (user), solid | USB configured, app heartbeat OK |
+| Yellow, blinking 1 Hz | USB configured, **no heartbeat for 30 s** (board idle) |
 | Yellow, off | No USB host / not enumerated |
-| TX | Flashes (80 ms) on mouse move/click |
-| RX | Flashes (80 ms) on keyboard output |
+| TX | Flashes (80 ms) on mouse move |
+| RX | Off |
 
 ## Verification status
 
-Observed on real hardware (Seeeduino XIAO M0, macOS), using the firmware's `?` status counters as ground truth for what the board actually received:
+Checked on real hardware (Seeeduino XIAO M0, macOS 27) with the current firmware and the Swift app, on 2026-11-18, using the firmware's `?` counters as ground truth for what the board actually received:
 
 | Check | Evidence |
 |-------|----------|
-| Heartbeats reach the board | `hb` counter rose by exactly 1 per 5 s cycle, `fb=0` throughout |
-| Jiggles reach the board | each jiggle raised the board's `mv` counter by exactly 2 (`mv=2→4→6→…`) |
-| Real input stops jiggling | after an injected input event the service logged `real input detected`, stopped jiggling, and restarted its idle clock from the real input |
-| Fallback engages when the service is silent | 36 s with no service: board reported `fb=1` |
-| Fallback clears when the service returns | first heartbeat after restart: `fb=0` |
-| **Recovery after the board re-enumerates, with the port held open** | Reflashed the board twice while the service was running (the board drops off USB and returns). The *same* service process (same pid) reconnected on its own; `hb` restarted from ~1 and `fb=0` at +5 s, +15 s and +30 s each time |
-| Port selection by USB IDs + `SEEEDJIGGLER` reply | board found and verified on every start in these tests (but see the stall below) |
-| Jiggler-only build | flashed: board exposes no keyboard interface (usage pairs only mouse/pointer), `T`/`K` commands answer `ERR`, `M` and heartbeats work |
-| Full build | flashed back: keyboard + mouse + pointer interfaces present; unknown commands answer `ERR` |
-| Memory | flat ~2.5–3.8 MB RSS, constant fd count, `leaks` 0 (see [testing.md](testing.md)) |
+| Current firmware flashed and answering | `SEEEDJIGGLER 2 app=… age=… hb=… mv=…` |
+| Board never moves the mouse by itself | app stopped, board silent for 137 s: `app=0`, `mv=0`, and macOS HID idle time rose without a single reset for 120 s (the removed self-jiggle fired every 45 s after 30 s) |
+| Mouse-only firmware | flashed 2026-11-18: macOS lists a single HID interface (mouse), `T hello` and `K enter` answer `ERR`, `M 0 0` answers `OK` |
+| Silent start | right after boot, before any heartbeat: `app=0 hb=0` |
+| App finds and verifies the board | after starting the app, `app=1`; also found it on hot-plug (the board showed `hb=15` from a 75 s run that began when it was plugged in) |
+| Heartbeats reach the board | `hb` 7 → 17 in about 50 s (one per 5 s) |
+| Jiggles reach the board | `mv` 2 → 4 about 45 s apart (each jiggle is two `M` commands) |
+| Real input holds jiggling off | with the Mac in active use right after launch, `mv` stayed 0 for 12 s (short observation) |
+| Live menu bar item | seen in a screenshot of the real menu bar on a dark wallpaper: legible white glyph |
+| Memory | `leaks` 0, about 12 MB physical footprint ([testing.md](testing.md)) |
 
-Not verified:
+Observed earlier with the previous C engine and old firmware, not repeated with the current code: recovery after the board re-enumerates (reflashing twice under a running process, same pid recovered), real input stopping a jiggle that was already running.
 
-* **A physical USB unplug/replug with the current code.** Reflashing re-enumerates the board (the strongest substitute available without touching the cable), but it is not the same event as pulling the cable.
-* **LEDs in fallback.** The user confirmed by eye (2026-11-18, current firmware) that the yellow LED is solid while the service is healthy and the TX LED flashes. The fallback-mode behaviours (yellow blinking, TX flashing on the self-jiggle) were not observed; a bug where TX would not light in fallback (stale `millis()` value) was found by code review and fixed, but the fix was not seen on the board.
-* **Fallback cadence**: the 45 s self-jiggle interval was not measured (the `?` counters do not count fallback moves).
-* **A second XIAO plugged in at the same time**: the service now tries every device with the board's USB IDs and uses the first that answers as SeeedJiggler, but this was not tested with two boards. (Until a device answers `?` correctly it is sent that one line.)
+Not verified with the current code:
+
+* **Pause** from the menu on the real board (verified on the emulator only), and **unplug/replug** with the app running (replug was only seen once, at first plug-in).
+* **The no-heartbeat LED blink**, and the other LED behaviours of the new firmware, by eye.
+* **A second XIAO plugged in at the same time**: the app tries every device with the board's USB IDs and uses the first that answers as SeeedJiggler, but this was not tested with two boards.
 * **A sleeping Mac**: the firmware never requests USB remote wake-up, so it should not wake a sleeping host; not tested.
-* **Typing/key commands** (`T`, `K`, `C`, …): only lightly tested; US keyboard layout assumed.
-* **One unexplained start-up stall.** Once, right after heavy stress testing, a freshly reinstalled service delivered no heartbeats for at least ~25 s (the board's `age` kept growing) while the process showed a ~144 KB footprint and had no serial port open. It was stopped at that point, so how long it would have lasted is unknown, and the stack sample taken was filtered so aggressively that it shows nothing about where the process was. It did **not** recur in several further attempts, including the same precondition (stop service → heavy stress → install immediately) and back-to-back installs. Cause unknown; a delayed launch of a freshly built binary under load is a guess. If it happens, the board's watchdog covers the gap (it only starts jiggling after 30 s of silence).
+* **Keep-awake preventing the lock**: see [app.md](app.md).
+* **Start-up stall:** a LaunchAgent whose binary is under `~/Documents` hung inside `open()` of its own executable before `main` (stack: `dyld … open`, ~144 KB footprint). The same binary run from `/private/tmp` under launchd started in under 4 s. The suspect is macOS file-access protection for background processes; no consent dialog or `tccd` entry was seen, so that is an inference. The installer and the *Start at login* item therefore run a copy from `~/.local/bin` when the repo is under Documents, Desktop or Downloads.

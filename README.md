@@ -1,8 +1,8 @@
 # SeeedJiggler
 
-A tiny hardware mouse jiggler built from a **Seeeduino XIAO (SAMD21)**, plus a tiny native macOS service (~3.5 MB, no logging, no disk writes) that only jiggles when you are actually idle.
+A tiny hardware mouse jiggler built from a **Seeeduino XIAO (SAMD21)**, plus a macOS **menu bar app** that only jiggles when you are actually idle, shows whether the board is connected, and can keep the Mac awake. The app is one Swift file: no logging, nothing written to disk while it runs, nothing to install on the target besides the app.
 
-The XIAO shows up to the computer as a genuine USB keyboard + mouse, so the activity is real HID input — it keeps chat/presence status "Available" and stops screen lock/sleep timers, with nothing to install on the target machine except the optional host service.
+The XIAO shows up to the computer as a genuine USB mouse, so the activity is real HID input — it keeps chat/presence status "Available" and stops screen lock/sleep timers, with nothing to install on the target machine except the optional app.
 
 > **Use responsibly.** Check your employer's acceptable-use policy before using any jiggler on a work machine. This project is provided for personal use and learning.
 
@@ -11,21 +11,21 @@ The XIAO shows up to the computer as a genuine USB keyboard + mouse, so the acti
 ```
  macOS host                                   XIAO board
  ┌──────────────────────┐   USB serial (CDC)  ┌────────────────────────────┐
- │ seeedjiggler (C)     │ ── "H" heartbeat ─▶ │ watchdog: heard in 30s? ok │
+ │ SeeedJiggler app     │ ── "H" heartbeat ─▶ │ LED: app heard in 30s?     │
  │  reads HIDIdleTime   │ ── "M 8 0 / M -8 0"▶│ Mouse.move()  ──USB HID──▶ host
  │  idle ≥ 120s? jiggle │                     │ LEDs: link / activity      │
  └──────────────────────┘                     └────────────────────────────┘
 ```
 
-* **Normal mode** – the host script watches macOS idle time. After 120 s with no real input it nudges the cursor 8 px and back every 45 s. Real input from you resets everything. The service logs nothing and writes nothing to disk.
-* **Fallback mode** – the script sends a heartbeat every 5 s. If the board hears nothing for 30 s (script stopped, crashed, not started after a reboot) it jiggles **by itself** every 45 s, and stops the moment the heartbeat returns. In fallback the board cannot tell whether you are using the computer, so you may see an occasional 8 px twitch while you work.
-* **LEDs** – solid yellow: connected and service healthy · slow blink: connected but service silent (fallback) · off: no USB host · TX LED flashes on mouse moves · RX LED flashes on keystrokes.
+* **Normal mode** – the app watches macOS idle time. After 120 s with no real input it nudges the cursor 8 px and back every 45 s. Real input from you resets everything. The app logs nothing and writes nothing to disk.
+* **The app is in charge** – it sends a heartbeat every 5 s, and the board does nothing on its own: **it never moves the mouse unless the app tells it to**. If the board hears no heartbeat for 30 s (app quit, crashed, not started after a reboot) it only blinks its yellow LED, so you can see the app is gone. Quit the app and jiggling stops.
+* **LEDs** – solid yellow: connected and app healthy · slow blink: connected but app silent (board idle) · off: no USB host · TX LED flashes on mouse moves.
 
 Full details: [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Quick start
 
-Requirements: a Seeeduino XIAO (SAMD21), macOS, [`arduino-cli`](https://arduino.github.io/arduino-cli/), Xcode command line tools (`clang`), Python 3 (only for the optional `hid.py` CLI).
+Requirements: a Seeeduino XIAO (SAMD21), macOS, [`arduino-cli`](https://arduino.github.io/arduino-cli/), Xcode command line tools (`swiftc`), Python 3 (only for the optional `hid.py` CLI).
 
 ```bash
 # 1. toolchain
@@ -33,52 +33,49 @@ brew install arduino-cli
 arduino-cli config add board_manager.additional_urls https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
 arduino-cli core update-index
 arduino-cli core install Seeeduino:samd
-arduino-cli lib install Keyboard Mouse
+arduino-cli lib install Mouse
 
 # 2. flash (board plugged in, see docs/hardware-and-flashing.md if it won't enter the bootloader)
 arduino-cli compile --fqbn Seeeduino:samd:seeed_XIAO_m0 firmware/SeeedJiggler
 arduino-cli upload  -p /dev/cu.usbmodem* --fqbn Seeeduino:samd:seeed_XIAO_m0 firmware/SeeedJiggler
 
-# 3. build and try the idle-aware service in the foreground (-v prints jiggles)
-scripts/build.sh && build/seeedjiggler -v
+# 3. build the app and run it once (menu bar icon appears)
+scripts/build.sh && build/SeeedJiggler
 
-# 4. ...or install it to start at login (builds it for you)
-scripts/install-service.sh
+# 4. ...or, instead of 3, install it to start at every login (builds it, replaces any running copy)
+scripts/install.sh
 ```
 
-Defaults can be changed with environment variables: `IDLE_SECS` (default 120) and `JIGGLE_EVERY` (default 45).
+The idle threshold (default 2 minutes) is chosen in the app's menu; jiggles repeat every 45 s. Start at login is also a menu option. Details: [docs/app.md](docs/app.md).
 
 ## Repository layout
 
 | Path | What it is |
 |------|------------|
-| `firmware/SeeedJiggler/SeeedJiggler.ino` | XIAO firmware: USB HID keyboard+mouse, serial command parser, watchdog fallback, LEDs |
-| `host/seeedjiggler.c` | macOS idle-aware service in C (heartbeat + jiggle logic, survives unplug/replug, no logging) |
+| `firmware/SeeedJiggler/SeeedJiggler.ino` | XIAO firmware: USB HID mouse only, serial command parser, app-presence LED |
+| `menubar/SeeedJiggler.swift` | The macOS app: idle-aware jiggle engine, board detection, menu bar UI, keep-awake, start-at-login |
 | `host/hid.py` | Optional Python CLI to send keystrokes / mouse actions to the board |
-| `scripts/build.sh`, `scripts/install-service.sh`, `scripts/uninstall-service.sh` | Compile the service; install/remove the macOS LaunchAgent so it starts at login |
-| `docs/` | Hardware & flashing, running as a service, serial protocol, design notes, memory/leak testing, troubleshooting |
+| `scripts/build.sh`, `scripts/install.sh`, `scripts/uninstall.sh` | Compile the app; install/remove the login LaunchAgent |
+| `docs/` | Hardware & flashing, the app, serial protocol, design notes, memory/leak testing, troubleshooting |
 
-## Checking the board / using it as a keyboard and mouse
+## Checking the board
 
 ```bash
-python3 -B -I host/hid.py status          # SEEEDJIGGLER 1 fb=0 age=1234 hb=57 mv=12
+python3 -B -I host/hid.py status          # SEEEDJIGGLER 2 app=1 age=1234 hb=57 mv=12
 python3 -B -I host/hid.py move 100 0      # relative mouse move
-python3 -B -I host/hid.py click r         # full firmware build only
-python3 -B -I host/hid.py type "hello"    # full firmware build only
-python3 -B -I host/hid.py key cmd+space   # full firmware build only
 ```
 
-`status` shows what the board actually received: `fb=1` means it is in fallback (service silent), `hb` counts heartbeats and `mv` counts mouse-move commands. The typing/key/click commands are lightly tested and use the Arduino `Keyboard` library, which **assumes a US keyboard layout**.
+`status` shows what the board actually received: `app=0` means it has heard no heartbeat for 30 s, `hb` counts heartbeats and `mv` counts mouse-move commands.
 
-**Security note.** The full firmware lets any local process that can open the board's serial port inject keystrokes and clicks (no Accessibility permission needed). If you only want a jiggler, flash the [jiggler-only build](docs/hardware-and-flashing.md#jiggler-only-build): mouse-only, no keyboard, no `T`/`K`/`C` commands.
+**Security note.** The firmware is mouse-only: it has no keyboard interface and no typing, key or click commands (`T`, `K`, `C` answer `ERR`). Any local process that can open the board's serial port can still move the mouse.
 
 Protocol reference: [docs/protocol.md](docs/protocol.md).
 
 ## Status & limitations
 
 * Tested on macOS with one XIAO (SAMD21). The mouse is **relative only** (no absolute positioning).
-* Install the LaunchAgent for start-at-login ([docs/service.md](docs/service.md)). Until the service is running (e.g. just after a reboot), the board's fallback mode keeps jiggling.
-* What has and has not been verified on hardware — heartbeats, jiggle delivery, fallback on/off, real-input detection, leak tests — is listed in [docs/how-it-works.md](docs/how-it-works.md#verification-status). Replug with the current code has not been re-tested.
+* The app must be running for anything to jiggle: after a reboot, until you log in, or after Quit, nothing does. Turn on *Start at login* (or run `scripts/install.sh`). The board no longer covers for a stopped or hung app.
+* What has and has not been verified on hardware — heartbeats, jiggle delivery, real-input detection, leak tests — is listed in [docs/how-it-works.md](docs/how-it-works.md#verification-status). Pause and replug with the current code are listed as unverified there.
 * The board's USB core never issues a remote-wake request, so it should not wake a sleeping computer; this was not tested empirically.
 
 ## License

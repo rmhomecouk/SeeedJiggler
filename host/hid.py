@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Talk to the SeeedJiggler board.
 
-  hid.py status                 board status line (does not feed the watchdog)
+  hid.py status                 board status line (does not count as a heartbeat)
   hid.py move 100 0             relative mouse move
-  hid.py click [l|r|m]          (full firmware build only)
-  hid.py type "text"            (full firmware build only; US keyboard layout assumed)
-  hid.py key cmd+space          (full firmware build only)
-  hid.py scroll -3 | down l | up l | raw "M 5 5"
+  hid.py raw "M 5 5"            send a raw protocol line
 
 The board is the first /dev/cu.usbmodem* that answers "?" with SEEEDJIGGLER. Set HID_PORT=/dev/cu.usbmodemXXXX
 to skip probing (probing sends a harmless "?" line to each candidate serial port).
@@ -85,7 +82,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     c, *r = sys.argv[1:]
-    m = {"type": "T", "key": "K", "move": "M", "click": "C", "scroll": "S", "down": "D", "up": "U"}
+    m = {"move": "M"}
     arg = " ".join(r)
     try:
         if c == "status":

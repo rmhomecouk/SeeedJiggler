@@ -11,7 +11,7 @@ brew install arduino-cli
 arduino-cli config add board_manager.additional_urls https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
 arduino-cli core update-index
 arduino-cli core install Seeeduino:samd
-arduino-cli lib install Keyboard Mouse
+arduino-cli lib install Mouse
 ```
 
 FQBN: `Seeeduino:samd:seeed_XIAO_m0`.
@@ -24,18 +24,6 @@ arduino-cli upload  -p /dev/cu.usbmodemXXXX --fqbn Seeeduino:samd:seeed_XIAO_m0 
 ```
 
 Find the port with `arduino-cli board list` or `ls /dev/cu.usbmodem*`.
-
-### Jiggler-only build
-
-The full firmware also exposes a USB **keyboard** and the `T`/`K`/`S`/`C`/`D`/`U` commands, which let any local program that can write to the serial port inject keystrokes. If you only want a jiggler, build the reduced firmware — it enumerates as a mouse only and accepts just `H`, `?` and `M`:
-
-```bash
-arduino-cli compile --fqbn Seeeduino:samd:seeed_XIAO_m0 \
-  --build-property "compiler.cpp.extra_flags=-DJIGGLER_ONLY=1" firmware/SeeedJiggler
-arduino-cli upload -p /dev/cu.usbmodemXXXX --fqbn Seeeduino:samd:seeed_XIAO_m0 firmware/SeeedJiggler
-```
-
-(Compile and upload must use the same variant: upload re-uses the last build, so rebuild without the flag to return to the full firmware.)
 
 ### Entering the bootloader
 

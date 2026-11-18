@@ -2,19 +2,21 @@
 
 **Board not found / `SeeedJiggler board not found`** — Check `ioreg -p IOUSB -l -w0 | grep "USB Product"`: a working board is "Seeed XIAO M0" (vendor `0x2886`, product `0x802F`). "Seeeduino XIAO" means it is sitting in the bootloader — reflash it or power-cycle. The host tools only talk to a port that answers `?` with `SEEEDJIGGLER`, so a board still running other firmware is (correctly) ignored. Try another cable (many are charge-only). `python3 -B -I host/hid.py status` tests the whole path.
 
-**Yellow LED blinking** — The board is connected but hearing no heartbeats, so it is jiggling by itself (fallback). Start or reinstall the service; `hid.py status` shows `fb=1` until a heartbeat arrives.
+**Yellow LED blinking** — The board is connected but hearing no heartbeats: the app is not running. The board does nothing on its own in that state. Start the app (or `scripts/install.sh`); `hid.py status` shows `app=0` until a heartbeat arrives. (A board still on the old firmware also jiggles by itself here; reflash it.)
 
 **Won't enter bootloader** — Double-tap RST→GND (see [hardware-and-flashing.md](hardware-and-flashing.md)). The bootloader shows as "Seeeduino XIAO".
 
-**Compile error `Keyboard.h: No such file`** — `arduino-cli lib install Keyboard Mouse`.
+**Compile error `Mouse.h: No such file`** — `arduino-cli lib install Mouse`.
 
-**macOS asks about a new keyboard** — Expected on first connect (Keyboard Setup Assistant). You can close it.
+**macOS asks about a new keyboard** — Only with older full firmware. The current firmware has no keyboard, so this should not appear.
 
-**Cursor twitches while I'm working** — Either you've been idle ≥ 120 s (raise `IDLE_SECS`), or the service isn't running and the board is in fallback (yellow LED blinking). Start the service (`scripts/install-service.sh`, or `build/seeedjiggler -v` in a terminal).
+**Cursor twitches while I'm working** — You have been idle longer than the threshold (raise it in the app's menu), or the board is still on the old firmware that jiggles by itself when the app is not running: reflash it.
 
-**Status still goes "Away"** — Raise jiggle frequency (`JIGGLE_EVERY`) or lower `IDLE_SECS`; confirm the TX LED flashes on each jiggle, or run `build/seeedjiggler -v` in a terminal (the service itself keeps no log) to see "jiggled" lines.
+**Status still goes "Away"** — Lower the idle threshold in the app's menu; confirm the TX LED flashes on each jiggle, or check `hid.py status`: `mv` should rise by 2 per jiggle (the app keeps no log).
 
-**Service stops after reboot/logout** — Install the LaunchAgent: see [service.md](service.md). Until then the board's fallback keeps jiggling.
+**The app is not running after reboot/logout** — Tick *Start at login* in its menu (or run `scripts/install.sh`). Until then nothing jiggles.
 
-**Serial port busy during upload** — Stop the service while flashing (`scripts/uninstall-service.sh`, or `launchctl bootout gui/$(id -u)/com.seeedjiggler`), then reinstall.
+**Serial port busy during upload** — Quit the app while flashing (menu → Quit), then start it again.
 
+
+**App never appears / no heartbeats (≈144 KB footprint)** — A LaunchAgent started from a binary in `~/Documents`, `~/Desktop` or `~/Downloads` can hang before `main` (see [how-it-works.md](how-it-works.md)). `scripts/install.sh` and the *Start at login* item run a copy from `~/.local/bin` for that reason.
